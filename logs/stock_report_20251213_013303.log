@@ -1,0 +1,35 @@
+========================================= 
+ì‹¤í–‰ ì‹œìž‘: 2025-12-13  1:33:03.34 
+ìž‘ì—… ë””ë ‰í† ë¦¬: D:\workspace\stockReport 
+Python ë²„ì „: 
+Python 3.13.5
+========================================= 
+[INFO] stock_report.py ì‹¤í–‰ ì¤‘... 
+[INFO] ±âÁØÀÏ: 20251212
+KOSPI ±âº» ÇÊÅÍ:   0%|          | 0/958 [00:00<?, ?it/s]KOSPI ±âº» ÇÊÅÍ:  31%|###1      | 300/958 [00:04<00:09, 68.69it/s]KOSPI ±âº» ÇÊÅÍ: 100%|##########| 958/958 [00:04<00:00, 217.59it/s]
+KOSDAQ ±âº» ÇÊÅÍ:   0%|          | 0/1820 [00:00<?, ?it/s]KOSDAQ ±âº» ÇÊÅÍ: 100%|##########| 1820/1820 [00:00<00:00, 19304.64it/s]
+»ó¼¼ ºÐ¼®:   0%|          | 0/17 [00:00<?, ?it/s]»ó¼¼ ºÐ¼®:   6%|5         | 1/17 [00:00<00:04,  3.47it/s]»ó¼¼ ºÐ¼®:  12%|#1        | 2/17 [00:00<00:03,  3.80it/s]»ó¼¼ ºÐ¼®:  18%|#7        | 3/17 [00:00<00:03,  4.07it/s]»ó¼¼ ºÐ¼®:  24%|##3       | 4/17 [00:01<00:03,  4.02it/s]»ó¼¼ ºÐ¼®:  29%|##9       | 5/17 [00:01<00:03,  3.96it/s]»ó¼¼ ºÐ¼®:  35%|###5      | 6/17 [00:01<00:02,  3.68it/s]»ó¼¼ ºÐ¼®:  41%|####1     | 7/17 [00:01<00:02,  3.77it/s]»ó¼¼ ºÐ¼®:  47%|####7     | 8/17 [00:02<00:02,  3.71it/s]»ó¼¼ ºÐ¼®:  53%|#####2    | 9/17 [00:02<00:02,  3.75it/s]»ó¼¼ ºÐ¼®:  59%|#####8    | 10/17 [00:02<00:01,  3.69it/s]»ó¼¼ ºÐ¼®:  65%|######4   | 11/17 [00:02<00:01,  3.65it/s]»ó¼¼ ºÐ¼®:  71%|#######   | 12/17 [00:03<00:01,  3.80it/s]»ó¼¼ ºÐ¼®:  76%|#######6  | 13/17 [00:03<00:01,  3.68it/s]»ó¼¼ ºÐ¼®:  82%|########2 | 14/17 [00:03<00:00,  3.57it/s]»ó¼¼ ºÐ¼®:  88%|########8 | 15/17 [00:04<00:00,  3.57it/s]»ó¼¼ ºÐ¼®:  94%|#########4| 16/17 [00:04<00:00,  3.60it/s]»ó¼¼ ºÐ¼®: 100%|##########| 17/17 [00:04<00:00,  3.60it/s]»ó¼¼ ºÐ¼®: 100%|##########| 17/17 [00:04<00:00,  3.70it/s]
+[INFO] HTML ÀúÀå ¿Ï·á: .\Premium_AI_Report_v4_20251212.html
+[INFO] HTML ÀúÀå ¿Ï·á: .\Premium_AI_Report_v4_20251212.html
+Traceback (most recent call last):
+  File "D:\workspace\stockReport\stock_report.py", line 102, in upload_to_github_and_notify
+    print(f"\u2705 HTML ÆÄÀÏ »ý¼º: reports/{filename}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'cp949' codec can't encode character '\u2705' in position 0: illegal multibyte sequence
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\workspace\stockReport\stock_report.py", line 940, in <module>
+    generate_report()
+    ~~~~~~~~~~~~~~~^^
+  File "D:\workspace\stockReport\stock_report.py", line 934, in generate_report
+    upload_to_github_and_notify(html, trade_date)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "D:\workspace\stockReport\stock_report.py", line 198, in upload_to_github_and_notify
+    print(f"\u274c ¿¹¿Ü ¹ß»ý: {str(e)}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'cp949' codec can't encode character '\u274c' in position 0: illegal multibyte sequence
+[ERROR] 2025-12-13  1:33:17.63 - ì‹¤í–‰ ì‹¤íŒ¨ (ì¢…ë£Œ ì½”ë“œ: 1) 
+========================================= 
+ 
