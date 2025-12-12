@@ -74,7 +74,7 @@ def upload_to_github_and_notify(html_content, trade_date):
     LOCAL_REPO_PATH = r"D:\workspace\stockReport"
     GITHUB_USERNAME = "jkkim74"
     GITHUB_REPO = "stock-report"
-    WEBHOOK_URL = "https://hooks.slack.com/services/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"
+    WEBHOOK_URL = "https://hooks.slack.com/services/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"
     
     try:
         # 1. 경로 확인
