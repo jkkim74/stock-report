@@ -76,3 +76,25 @@ UnicodeEncodeError: 'cp949' codec can't encode character '\u274c' in position 0:
 2025-12-13 02:17:51,297 - INFO - 📂 작업 디렉토리: D:\workspace\stockReport
 2025-12-13 02:17:53,905 - INFO - 
 ⏹️  스케줄러 종료됨 (Ctrl+C)
+2025-12-13 02:18:12,710 - INFO - 🚀 AI 프리미엄 추천 종목 리포트 스케줄러 시작
+2025-12-13 02:18:12,711 - INFO - ⏰ 실행 시간: 매일 15:40
+2025-12-13 02:18:12,711 - INFO - 📂 작업 디렉토리: D:\workspace\stockReport
+2025-12-13 02:19:12,711 - INFO - ============================================================
+2025-12-13 02:19:12,712 - INFO - AI 프리미엄 추천 종목 리포트 생성 시작
+2025-12-13 02:19:12,713 - INFO - ============================================================
+2025-12-13 02:19:28,696 - INFO - ✅ 리포트 생성 성공!
+2025-12-13 02:19:28,696 - INFO - 출력:
+[INFO] 기준일: 20251212
+[INFO] HTML 저장 완료: .\Premium_AI_Report_v4_20251212.html
+[INFO] HTML 저장 완료: .\Premium_AI_Report_v4_20251212.html
+[SUCCESS] HTML 파일 생성: reports/report_20251212.html
+[INFO] GitHub에 업로드 중...
+[SUCCESS] 커밋 완료
+[INFO] 변경사항이 없어 커밋을 건너뜁니다
+[WEB] 리포트 URL: https://jkkim74.github.io/stock-report/reports/report_20251212.html
+[INFO] GitHub Pages 반영까지 1-2분 소요
+[SUCCESS] Slack 알림 전송 완료!
+
+2025-12-13 02:19:28,697 - INFO - ============================================================
+2025-12-13 02:20:12,157 - INFO - 
+⏹️  스케줄러 종료됨 (Ctrl+C)
