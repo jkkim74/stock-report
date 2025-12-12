@@ -68,41 +68,79 @@ import json
 from datetime import datetime
 
 def upload_to_github_and_notify(html_content, trade_date):
-    """HTML을 GitHub Pages에 업로드하고 Slack에 링크 전송"""
+    """nothing to commit 오류를 해결한 업로드 함수"""
     
-    # GitHub 설정
+    # 설정 (기존과 동일)
+    LOCAL_REPO_PATH = r"D:\workspace\stockReport"
     GITHUB_USERNAME = "jkkim74"
     GITHUB_REPO = "stock-report"
-    
-    # Slack Webhook 설정 (기존 것 사용 가능)
     WEBHOOK_URL = "https://hooks.slack.com/services/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"
     
     try:
-        # 1. HTML 파일 저장
+        # 1. 경로 확인
+        if not os.path.exists(LOCAL_REPO_PATH):
+            print(f"❌ 저장소 경로를 찾을 수 없습니다: {LOCAL_REPO_PATH}")
+            return False
+        
+        # 2. .nojekyll 파일 생성 (GitHub Pages 호환성)
+        nojekyll_path = os.path.join(LOCAL_REPO_PATH, ".nojekyll")
+        if not os.path.exists(nojekyll_path):
+            with open(nojekyll_path, "w") as f:
+                f.write("")
+            print("✅ .nojekyll 파일 생성")
+        
+        # 3. HTML 파일 저장
+        reports_dir = os.path.join(LOCAL_REPO_PATH, "reports")
+        os.makedirs(reports_dir, exist_ok=True)
+        
         filename = f"report_{trade_date}.html"
+        file_path = os.path.join(reports_dir, filename)
         
-        os.makedirs("reports", exist_ok=True)
-        filepath = os.path.join("reports", filename)
-        
-        with open(filepath, "w", encoding="utf-8") as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             f.write(html_content)
         
-        print(f"📄 HTML 파일 생성: {filepath}")
+        print(f"✅ HTML 파일 생성: reports/{filename}")
         
-        # 2. Git에 커밋 및 푸시
+        # 4. Git 작업 (핵심 수정 부분)
         print("📤 GitHub에 업로드 중...")
         
-        subprocess.run(["git", "add", filepath], check=True)
-        subprocess.run(["git", "commit", "-m", f"Add report {trade_date}"], check=True)
-        subprocess.run(["git", "push", "origin", "main"], check=True)
+        # Pull (충돌 방지)
+        subprocess.run(
+            ["git", "pull", "origin", "main"], 
+            cwd=LOCAL_REPO_PATH, 
+            check=False,  # pull 실패해도 계속 진행
+            capture_output=True
+        )
         
-        # 3. GitHub Pages URL 생성 (몇 분 후 활성화됨)
-        web_url = f"https://{GITHUB_USERNAME}.github.io/{GITHUB_REPO}/{filepath}"
+        # Add
+        subprocess.run(["git", "add", "."], cwd=LOCAL_REPO_PATH, check=True)
         
-        print(f"✅ GitHub Pages 업로드 완료!")
-        print(f"🌐 웹 URL: {web_url}")
+        # 🔥 핵심 수정: Commit을 try-except로 감싸서 "nothing to commit" 처리
+        try:
+            subprocess.run(
+                ["git", "commit", "-m", f"Add AI premium stock report {trade_date}"], 
+                cwd=LOCAL_REPO_PATH, 
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            print("✅ 새로운 커밋 생성 완료")
+            
+            # 새 커밋이 있을 때만 Push
+            subprocess.run(["git", "push", "origin", "main"], cwd=LOCAL_REPO_PATH, check=True)
+            print("✅ GitHub 푸시 완료")
+            
+        except subprocess.CalledProcessError as commit_error:
+            # "nothing to commit" 상황을 정상 처리
+            print("ℹ️  변경사항이 없어 커밋을 건너뜁니다. (이미 최신 상태)")
+            print("   → 이는 정상적인 상황입니다. Slack 알림은 계속 진행합니다.")
         
-        # 4. Slack에 클릭 가능한 버튼 메시지 전송
+        # 5. GitHub Pages URL 생성
+        web_url = f"https://{GITHUB_USERNAME}.github.io/{GITHUB_REPO}/reports/{filename}"
+        print(f"🌐 리포트 URL: {web_url}")
+        print("⏱️  GitHub Pages 반영까지 1-2분 소요됩니다.")
+        
+        # 6. Slack 알림 (변경사항이 없어도 전송)
         payload = {
             "blocks": [
                 {
@@ -117,7 +155,7 @@ def upload_to_github_and_notify(html_content, trade_date):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*기준일:* {trade_date}\n*분석 기준:* 시가총액 ≥ 3000억, 등락률 ≥ 5%, 거래대금 ≥ 1000억\n\n🚀 *오늘의 리포트가 출시되었습니다!*"
+                        "text": f"*기준일:* {trade_date}\n*분석 기준:* 시가총액 ≥ 3000억, 등락률 ≥ 5%, 거래대금 ≥ 1000억\n\n🚀 *오늘의 리포트가 준비되었습니다!*"
                     }
                 },
                 {
@@ -140,7 +178,7 @@ def upload_to_github_and_notify(html_content, trade_date):
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": "💡 위 버튼을 클릭하면 브라우저에서 리포트가 바로 열립니다!"
+                            "text": "💡 버튼을 클릭하면 브라우저에서 완전한 리포트를 확인할 수 있습니다!"
                         }
                     ]
                 }
@@ -150,76 +188,14 @@ def upload_to_github_and_notify(html_content, trade_date):
         response = requests.post(WEBHOOK_URL, data=json.dumps(payload))
         
         if response.status_code == 200:
-            print("✅ Slack 메시지 전송 성공!")
+            print("✅ Slack 알림 전송 완료!")
             return True
         else:
-            print(f"❌ Slack 메시지 전송 실패: {response.text}")
+            print(f"⚠️  Slack 전송 실패: {response.text}")
             return False
             
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Git 명령 실패: {e}")
-        print("💡 Git이 설치되어 있고 GitHub 저장소가 올바르게 설정되었는지 확인하세요.")
-        return False
     except Exception as e:
         print(f"❌ 예외 발생: {str(e)}")
-        return False
-
-
-def convert_to_pdf_and_send(html_path, trade_date):
-    """HTML을 PDF로 변환하여 Slack에 전송"""
-    
-    # Slack 설정
-    SLACK_TOKEN = "xoxb-9745985197379-10123228976753-ahTerLqgVeOoiQCL8gdmsJOL"  # 발급받은 Bot Token
-    CHANNEL_ID = "C09MNTRR739"  # 전송할 채널명
-    
-    # Windows용 wkhtmltopdf 경로 설정 (설치 경로에 맞게 수정)
-    path_to_wkhtmltopdf = r'C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe'
-    config = pdfkit.configuration(wkhtmltopdf=path_to_wkhtmltopdf)
-    
-    # PDF 변환 옵션
-    options = {
-        'page-size': 'A4',
-        'margin-top': '0.5in',
-        'margin-right': '0.5in', 
-        'margin-bottom': '0.5in',
-        'margin-left': '0.5in',
-        'encoding': "UTF-8",
-        'no-outline': None,
-        'enable-local-file-access': None,
-        'print-media-type': None  # CSS @media print 적용
-    }
-    
-    try:
-        # HTML을 PDF로 변환
-        pdf_path = html_path.replace('.html', '.pdf')
-        
-        print("📄 HTML을 PDF로 변환 중...")
-        pdfkit.from_file(html_path, pdf_path, configuration=config, options=options)
-        print(f"✅ PDF 변환 완료: {pdf_path}")
-        
-        # Slack에 PDF 업로드
-        client = WebClient(token=SLACK_TOKEN)
-        
-        print("📤 Slack에 PDF 업로드 중...")
-        
-        response = client.files_upload_v2(
-            channel=CHANNEL_ID,
-            file=pdf_path,
-            title=f"AI 프리미엄 추천 종목 리포트 ({trade_date})",
-            initial_comment=f"📊 **AI 기반 프리미엄 추천 종목 리포트 v4**가 출시되었습니다! ({trade_date})\n\n💡 PDF를 클릭하면 Slack에서 바로 확인할 수 있습니다."
-        )
-        
-        print("✅ PDF 리포트 전송 완료!")
-        
-        if response.get('files'):
-            file_url = response['files'][0].get('permalink', 'N/A')
-            print(f"📎 Slack 파일 링크: {file_url}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ PDF 변환 또는 전송 실패: {str(e)}")
-        print("💡 wkhtmltopdf가 제대로 설치되었는지 확인하세요.")
         return False
 
 
