@@ -2,3 +2,44 @@
 실행 시작: 2025-12-13  1:50:00.95 
 작업 디렉토리: D:\workspace\stockReport 
 ========================================= 
+[INFO] 기준일: 20251212
+KOSPI 기본 필터:   0%|          | 0/958 [00:00<?, ?it/s]KOSPI 기본 필터:  31%|███▏      | 300/958 [00:04<00:08, 74.27it/s]KOSPI 기본 필터: 100%|██████████| 958/958 [00:04<00:00, 234.78it/s]
+KOSDAQ 기본 필터:   0%|          | 0/1820 [00:00<?, ?it/s]KOSDAQ 기본 필터:  99%|█████████▊| 1794/1820 [00:00<00:00, 17934.76it/s]KOSDAQ 기본 필터: 100%|██████████| 1820/1820 [00:00<00:00, 17913.94it/s]
+상세 분석:   0%|          | 0/17 [00:00<?, ?it/s]상세 분석:   6%|▌         | 1/17 [00:00<00:03,  4.73it/s]상세 분석:  12%|█▏        | 2/17 [00:00<00:03,  4.28it/s]상세 분석:  18%|█▊        | 3/17 [00:00<00:03,  4.41it/s]상세 분석:  24%|██▎       | 4/17 [00:00<00:03,  3.85it/s]상세 분석:  29%|██▉       | 5/17 [00:01<00:03,  3.94it/s]상세 분석:  35%|███▌      | 6/17 [00:01<00:02,  4.26it/s]상세 분석:  41%|████      | 7/17 [00:01<00:02,  4.35it/s]상세 분석:  47%|████▋     | 8/17 [00:01<00:01,  4.53it/s]상세 분석:  53%|█████▎    | 9/17 [00:02<00:01,  4.53it/s]상세 분석:  59%|█████▉    | 10/17 [00:02<00:01,  4.60it/s]상세 분석:  65%|██████▍   | 11/17 [00:02<00:01,  4.39it/s]상세 분석:  71%|███████   | 12/17 [00:02<00:01,  4.72it/s]상세 분석:  76%|███████▋  | 13/17 [00:02<00:00,  4.55it/s]상세 분석:  82%|████████▏ | 14/17 [00:03<00:00,  4.72it/s]상세 분석:  88%|████████▊ | 15/17 [00:03<00:00,  4.66it/s]상세 분석:  94%|█████████▍| 16/17 [00:03<00:00,  4.76it/s]상세 분석: 100%|██████████| 17/17 [00:03<00:00,  4.72it/s]상세 분석: 100%|██████████| 17/17 [00:03<00:00,  4.50it/s]
+remote: error: GH013: Repository rule violations found for refs/heads/main.        
+remote: 
+remote: - GITHUB PUSH PROTECTION        
+remote:   —————————————————————————————————————————        
+remote:     Resolve the following violations before pushing again        
+remote: 
+remote:     - Push cannot contain secrets        
+remote: 
+remote:             
+remote:      (?) Learn how to resolve a blocked push        
+remote:      https://docs.github.com/code-security/secret-scanning/working-with-secret-scanning-and-push-protection/working-with-push-protection-from-the-command-line#resolving-a-blocked-push        
+remote:             
+remote:             
+remote:       —— Slack Incoming Webhook URL ————————————————————————        
+remote:        locations:        
+remote:          - commit: 61111ca37a5dedbb394e086ffda0cc195991d0b8        
+remote:            path: stock_report.py:77        
+remote:             
+remote:        (?) To push, remove secret from commit(s) or follow this URL to allow the secret.        
+remote:        https://github.com/jkkim74/stock-report/security/secret-scanning/unblock-secret/36kggp6MVrsdeWmrgLj5eiXNOug        
+remote:             
+remote: 
+remote: 
+To https://github.com/jkkim74/stock-report.git
+ ! [remote rejected] main -> main (push declined due to repository rule violations)
+error: failed to push some refs to 'https://github.com/jkkim74/stock-report.git'
+[INFO] HTML 저장 완료: .\Premium_AI_Report_v4_20251212.html
+[INFO] HTML 저장 완료: .\Premium_AI_Report_v4_20251212.html
+✅ HTML 파일 생성: reports/report_20251212.html
+📤 GitHub에 업로드 중...
+✅ 새로운 커밋 생성 완료
+ℹ️  변경사항이 없어 커밋을 건너뜁니다. (이미 최신 상태)
+   → 이는 정상적인 상황입니다. Slack 알림은 계속 진행합니다.
+🌐 리포트 URL: https://jkkim74.github.io/stock-report/reports/report_20251212.html
+⏱️  GitHub Pages 반영까지 1-2분 소요됩니다.
+✅ Slack 알림 전송 완료!
+[SUCCESS] 2025-12-13  1:50:16.49 - 리포트 생성 성공 

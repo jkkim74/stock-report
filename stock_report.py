@@ -25,6 +25,29 @@ Master Premium + Pattern + AI Strategy v4
 
 6) 모바일(스마트폰)에서도 보기 좋은 반응형 디자인 적용
 """
+import sys
+
+# Windows 콘솔 UTF-8 인코딩 강제 설정
+if sys.platform == 'win32':
+    try:
+        # Python 3.7+ 방법 (권장)
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except AttributeError:
+        # Python 3.6 이하 호환성
+        import io
+        sys.stdout = io.TextIOWrapper(
+            sys.stdout.buffer,
+            encoding='utf-8',
+            errors='replace',
+            line_buffering=True
+        )
+        sys.stderr = io.TextIOWrapper(
+            sys.stderr.buffer,
+            encoding='utf-8',
+            errors='replace',
+            line_buffering=True
+        )
 
 import os
 import webbrowser
@@ -66,11 +89,19 @@ import subprocess
 import requests
 import json
 from datetime import datetime
-
 def upload_to_github_and_notify(html_content, trade_date):
-    """nothing to commit 오류를 해결한 업로드 함수"""
+    """완전 인코딩 안전 버전"""
     
-    # 설정 (기존과 동일)
+    # 안전한 출력 함수
+    def safe_print(message):
+        """인코딩 오류 없이 출력"""
+        try:
+            print(message)
+        except UnicodeEncodeError:
+            # 이모지 제거 후 재시도
+            ascii_message = message.encode('ascii', errors='ignore').decode('ascii')
+            print(f"[SAFE] {ascii_message}")
+    
     LOCAL_REPO_PATH = r"D:\workspace\stockReport"
     GITHUB_USERNAME = "jkkim74"
     GITHUB_REPO = "stock-report"
@@ -79,15 +110,15 @@ def upload_to_github_and_notify(html_content, trade_date):
     try:
         # 1. 경로 확인
         if not os.path.exists(LOCAL_REPO_PATH):
-            print(f"❌ 저장소 경로를 찾을 수 없습니다: {LOCAL_REPO_PATH}")
+            safe_print(f"[ERROR] 저장소 경로를 찾을 수 없습니다: {LOCAL_REPO_PATH}")
             return False
         
-        # 2. .nojekyll 파일 생성 (GitHub Pages 호환성)
+        # 2. .nojekyll 파일 생성
         nojekyll_path = os.path.join(LOCAL_REPO_PATH, ".nojekyll")
         if not os.path.exists(nojekyll_path):
             with open(nojekyll_path, "w") as f:
                 f.write("")
-            print("✅ .nojekyll 파일 생성")
+            safe_print("[SUCCESS] .nojekyll 파일 생성")
         
         # 3. HTML 파일 저장
         reports_dir = os.path.join(LOCAL_REPO_PATH, "reports")
@@ -99,48 +130,53 @@ def upload_to_github_and_notify(html_content, trade_date):
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(html_content)
         
-        print(f"✅ HTML 파일 생성: reports/{filename}")
+        safe_print(f"[SUCCESS] HTML 파일 생성: reports/{filename}")
         
-        # 4. Git 작업 (핵심 수정 부분)
-        print("📤 GitHub에 업로드 중...")
+        # 4. Git 작업 (인코딩 안전 처리)
+        safe_print("[INFO] GitHub에 업로드 중...")
         
         # Pull (충돌 방지)
         subprocess.run(
             ["git", "pull", "origin", "main"], 
-            cwd=LOCAL_REPO_PATH, 
-            check=False,  # pull 실패해도 계속 진행
-            capture_output=True
+            cwd=LOCAL_REPO_PATH,
+            capture_output=True,
+            check=False
         )
         
         # Add
-        subprocess.run(["git", "add", "."], cwd=LOCAL_REPO_PATH, check=True)
+        subprocess.run(
+            ["git", "add", "."], 
+            cwd=LOCAL_REPO_PATH,
+            check=True
+        )
         
-        # 🔥 핵심 수정: Commit을 try-except로 감싸서 "nothing to commit" 처리
+        # Commit (nothing to commit 안전 처리)
         try:
             subprocess.run(
                 ["git", "commit", "-m", f"Add AI premium stock report {trade_date}"], 
-                cwd=LOCAL_REPO_PATH, 
+                cwd=LOCAL_REPO_PATH,
                 check=True,
-                capture_output=True,
-                text=True
+                capture_output=True
             )
-            print("✅ 새로운 커밋 생성 완료")
+            safe_print("[SUCCESS] 커밋 완료")
             
-            # 새 커밋이 있을 때만 Push
-            subprocess.run(["git", "push", "origin", "main"], cwd=LOCAL_REPO_PATH, check=True)
-            print("✅ GitHub 푸시 완료")
+            # Push
+            subprocess.run(
+                ["git", "push", "origin", "main"], 
+                cwd=LOCAL_REPO_PATH,
+                check=True
+            )
+            safe_print("[SUCCESS] GitHub 푸시 완료")
             
-        except subprocess.CalledProcessError as commit_error:
-            # "nothing to commit" 상황을 정상 처리
-            print("ℹ️  변경사항이 없어 커밋을 건너뜁니다. (이미 최신 상태)")
-            print("   → 이는 정상적인 상황입니다. Slack 알림은 계속 진행합니다.")
+        except subprocess.CalledProcessError:
+            safe_print("[INFO] 변경사항이 없어 커밋을 건너뜁니다")
         
-        # 5. GitHub Pages URL 생성
+        # 5. GitHub Pages URL
         web_url = f"https://{GITHUB_USERNAME}.github.io/{GITHUB_REPO}/reports/{filename}"
-        print(f"🌐 리포트 URL: {web_url}")
-        print("⏱️  GitHub Pages 반영까지 1-2분 소요됩니다.")
+        safe_print(f"[WEB] 리포트 URL: {web_url}")
+        safe_print("[INFO] GitHub Pages 반영까지 1-2분 소요")
         
-        # 6. Slack 알림 (변경사항이 없어도 전송)
+        # 6. Slack 알림 (이모지는 JSON에서는 정상 작동)
         payload = {
             "blocks": [
                 {
@@ -172,15 +208,6 @@ def upload_to_github_and_notify(html_content, trade_date):
                             "style": "primary"
                         }
                     ]
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": "💡 버튼을 클릭하면 브라우저에서 완전한 리포트를 확인할 수 있습니다!"
-                        }
-                    ]
                 }
             ]
         }
@@ -188,14 +215,14 @@ def upload_to_github_and_notify(html_content, trade_date):
         response = requests.post(WEBHOOK_URL, data=json.dumps(payload))
         
         if response.status_code == 200:
-            print("✅ Slack 알림 전송 완료!")
+            safe_print("[SUCCESS] Slack 알림 전송 완료!")
             return True
         else:
-            print(f"⚠️  Slack 전송 실패: {response.text}")
+            safe_print(f"[WARNING] Slack 전송 실패: {response.text}")
             return False
             
     except Exception as e:
-        print(f"❌ 예외 발생: {str(e)}")
+        safe_print(f"[ERROR] 예외 발생: {str(e)}")
         return False
 
 
@@ -207,18 +234,18 @@ def send_report_to_slack(file_path, trade_date):
     CHANNEL_ID = "C09MNTRR739"  # 전송할 채널명
     
     if not SLACK_TOKEN.startswith('xoxb-'):
-        print("⚠️  올바른 Bot Token이 필요합니다.")
+        print("올바른 Bot Token이 필요합니다.")
         return False
     
     if not os.path.exists(file_path):
-        print(f"❌ 파일을 찾을 수 없습니다: {file_path}")
+        print(f"파일을 찾을 수 없습니다: {file_path}")
         return False
     
     client = WebClient(token=SLACK_TOKEN)
     
     try:
         # 1. 먼저 예쁜 알림 메시지 전송
-        print("📤 리포트 알림 메시지 전송 중...")
+        print("리포트 알림 메시지 전송 중...")
         message_response = client.chat_postMessage(
             channel=CHANNEL_ID,
             blocks=[
@@ -226,7 +253,7 @@ def send_report_to_slack(file_path, trade_date):
                     "type": "header",
                     "text": {
                         "type": "plain_text",
-                        "text": f"📊 AI 기반 프리미엄 추천 종목 리포트 v4",
+                        "text": f"AI 기반 프리미엄 추천 종목 리포트 v4",
                         "emoji": True
                     }
                 },
@@ -242,7 +269,7 @@ def send_report_to_slack(file_path, trade_date):
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": "⚠️ 투자 유의사항: 데이터 기반 통계적 추천이므로 신중한 판단하에 투자하시기 바랍니다."
+                            "text": "투자 유의사항: 데이터 기반 통계적 추천이므로 신중한 판단하에 투자하시기 바랍니다."
                         }
                     ]
                 }
@@ -259,7 +286,7 @@ def send_report_to_slack(file_path, trade_date):
             initial_comment="💡 이 파일을 다운로드하여 브라우저에서 열어보세요!"
         )
         
-        print("✅ 리포트 전송 완료!")
+        print("리포트 전송 완료!")
         
         # 파일 링크 출력
         if file_response.get('files'):
@@ -270,20 +297,20 @@ def send_report_to_slack(file_path, trade_date):
         
     except SlackApiError as e:
         error_code = e.response['error']
-        print(f"❌ 전송 실패: {error_code}")
+        print(f"전송 실패: {error_code}")
         
         # 오류별 해결 방법
         if error_code == 'invalid_auth':
-            print("💡 Bot Token을 확인하세요 (xoxb-로 시작해야 함)")
+            print("Bot Token을 확인하세요 (xoxb-로 시작해야 함)")
         elif error_code == 'not_in_channel':
-            print("💡 채널에서 '/invite @봇이름' 명령어로 봇을 초대하세요")
+            print("채널에서 '/invite @봇이름' 명령어로 봇을 초대하세요")
         elif error_code == 'missing_scope':
-            print("💡 OAuth & Permissions에서 'files:write' 권한을 추가하세요")
+            print("OAuth & Permissions에서 'files:write' 권한을 추가하세요")
         
         return False
         
     except Exception as e:
-        print(f"❌ 예외 발생: {str(e)}")
+        print(f"예외 발생: {str(e)}")
         return False
 
 
@@ -296,30 +323,30 @@ def upload_html_to_slack(file_path, trade_date):
     
     # 토큰 유효성 검사
     if not SLACK_TOKEN.startswith('xoxb-'):
-        print("⚠️  Slack Bot Token이 올바르지 않습니다.")
-        print("💡 'xoxb-'로 시작하는 Bot User OAuth Token을 사용해야 합니다.")
+        print("Slack Bot Token이 올바르지 않습니다.")
+        print("'xoxb-'로 시작하는 Bot User OAuth Token을 사용해야 합니다.")
         return False
     
     # 파일 존재 확인
     if not os.path.exists(file_path):
-        print(f"❌ 파일을 찾을 수 없습니다: {file_path}")
+        print(f"파일을 찾을 수 없습니다: {file_path}")
         return False
     
     client = WebClient(token=SLACK_TOKEN)
     
     try:
-        print("📤 HTML 파일을 Slack에 업로드 중...")
+        print("HTML 파일을 Slack에 업로드 중...")
         
         # 미리보기 메시지
-        preview_message = f"""📊 **AI 기반 프리미엄 추천 종목 리포트 v4**
+        preview_message = f"""**AI 기반 프리미엄 추천 종목 리포트 v4**
 
 📅 **기준일:** {trade_date}
 🎯 **분석 기준:** 시가총액 ≥ 3000억, 등락률 ≥ 5%, 거래대금 ≥ 1000억
 
 💡 **첨부된 HTML 파일을 다운로드하여 브라우저에서 확인하세요!**
-    • 🔥 오늘의 추천주 (프리미엄 + 강한/완만 돌파)
-    • ⭐ 프리미엄 추천 종목  
-    • 👀 관심 종목 (AI 예상 상승 확률 포함)
+    • 오늘의 추천주 (프리미엄 + 강한/완만 돌파)
+    • 프리미엄 추천 종목  
+    • 관심 종목 (AI 예상 상승 확률 포함)
 
 ⚠️ **투자 유의사항:** 데이터 기반 통계적 추천이므로 신중한 판단하에 투자하시기 바랍니다."""
 
