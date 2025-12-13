@@ -56,7 +56,7 @@ def main():
     
     # 스케줄 설정 (한국 주식시장 기준)
     # 매일 오후 3시 40분에 실행 (장마감 후)
-    schedule.every().day.at("08:00").do(run_stock_report)
+    schedule.every().day.at("20:05").do(run_stock_report)
     
     # 평일만 실행하고 싶다면 (선택사항):
     # schedule.every().monday.at("15:40").do(run_stock_report)
@@ -66,7 +66,7 @@ def main():
     # schedule.every().friday.at("15:40").do(run_stock_report)
     
     logging.info("🚀 AI 프리미엄 추천 종목 리포트 스케줄러 시작")
-    logging.info(f"⏰ 실행 시간: 매일 15:40")
+    logging.info(f"⏰ 실행 시간: 매일 20:05")
     logging.info(f"📂 작업 디렉토리: {os.getcwd()}")
     
     # 즉시 실행 테스트 (선택사항)
