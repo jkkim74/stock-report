@@ -176,25 +176,49 @@ def upload_to_github_and_notify(html_content, trade_date):
         safe_print(f"[WEB] 리포트 URL: {web_url}")
         safe_print("[INFO] GitHub Pages 반영까지 1-2분 소요")
         
-        # 6. Slack 알림 (이모지는 JSON에서는 정상 작동)
+        # 6. Slack 알림 (채널 전체 푸시 알림 - 완전 수정 버전)
         payload = {
-             # 🔥 핵심: text 필드에 <!channel> 추가 (푸시 알림 트리거)
+            # 🔥 핵심 1: text 필드에 <!channel> 추가 (푸시 알림의 핵심!)
             "text": f"<!channel> 📊 AI 기반 프리미엄 추천 종목 리포트 v4 ({trade_date}) - 오늘의 리포트가 준비되었습니다!",
+            
             "blocks": [
+                # 🔥 핵심 2: header 대신 section + mrkdwn 사용
                 {
-                    "type": "header",
+                    "type": "section",
                     "text": {
-                        "type": "plain_text",
-                          # 메시지 본문에도 <!channel> 추가 (강조 효과)
-                        "text": "<!channel> 📊 *AI 기반 프리미엄 추천 종목 리포트 v4*",
-                        "emoji": True
+                        "type": "mrkdwn",  # ✅ plain_text가 아닌 mrkdwn 사용!
+                        "text": f"<!channel> 📊 *AI 기반 프리미엄 추천 종목 리포트 v4*\n\n*기준일:* {trade_date}"
                     }
+                },
+                {
+                    "type": "divider"  # 시각적 구분선
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "*분석 기준*\n시가총액 ≥ 3000억"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": "*등락률*\n≥ 5%"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": "*거래대금*\n≥ 1000억"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": "*상태*\n🚀 준비 완료"
+                        }
+                    ]
                 },
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*기준일:* {trade_date}\n*분석 기준:* 시가총액 ≥ 3000억, 등락률 ≥ 5%, 거래대금 ≥ 1000억\n\n🚀 *오늘의 리포트가 준비되었습니다!*"
+                        "text": "🚀 *오늘의 리포트가 준비되었습니다!*"
                     }
                 },
                 {
@@ -204,16 +228,26 @@ def upload_to_github_and_notify(html_content, trade_date):
                             "type": "button",
                             "text": {
                                 "type": "plain_text",
-                                "text": "📄 AI 기반 프리미엄 추천 종목 리포트 v4 보기",
+                                "text": "📄 AI 프리미엄 리포트 보기",
                                 "emoji": True
                             },
                             "url": web_url,
                             "style": "primary"
                         }
                     ]
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "💡 버튼을 클릭하면 브라우저에서 완전한 리포트를 확인할 수 있습니다."
+                        }
+                    ]
                 }
             ]
         }
+
         
         response = requests.post(WEBHOOK_URL, data=json.dumps(payload))
         
