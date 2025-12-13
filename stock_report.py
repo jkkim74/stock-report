@@ -178,12 +178,15 @@ def upload_to_github_and_notify(html_content, trade_date):
         
         # 6. Slack 알림 (이모지는 JSON에서는 정상 작동)
         payload = {
+             # 🔥 핵심: text 필드에 <!channel> 추가 (푸시 알림 트리거)
+            "text": f"<!channel> 📊 AI 기반 프리미엄 추천 종목 리포트 v4 ({trade_date}) - 오늘의 리포트가 준비되었습니다!",
             "blocks": [
                 {
                     "type": "header",
                     "text": {
                         "type": "plain_text",
-                        "text": "📊 AI 기반 프리미엄 추천 종목 리포트 v4",
+                          # 메시지 본문에도 <!channel> 추가 (강조 효과)
+                        "text": "<!channel> 📊 *AI 기반 프리미엄 추천 종목 리포트 v4*",
                         "emoji": True
                     }
                 },
