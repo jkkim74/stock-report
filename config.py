@@ -33,12 +33,27 @@ SLACK_CONFIG = {
     "channel_id": "C09MNTRR739"
 }
 
+# ===== Telegram 설정 (신규 추가) =====
+TELEGRAM_CONFIG = {
+    # BotFather에서 받은 Bot Token
+    "bot_token": "8501237845:AAHAKqCqTPODqpS1NSMcIaUD_Mg3CuAUK9c",  # ← 본인 토큰으로 변경!
+    
+    # Chat ID (개인: 숫자, 채널: @channel_name 또는 -100xxx)
+    "chat_id": "-5059622484",#"8149176134",#"@premium_stock_report_bot",#"8149176134",  # ← 본인 Chat ID로 변경!
+    
+    # 발송 옵션
+    "send_preview": True,       # 미리보기 메시지 포함 여부
+    "send_as_file": True,       # HTML 파일 첨부 여부
+    "parse_mode": "HTML",       # 메시지 형식 (HTML 또는 Markdown)
+    "file_size_limit_mb": 45    # 파일 크기 제한 (Telegram 최대 50MB)
+}
+
 # ===== 발송 방식 선택 =====
 # 옵션: "github_pages", "slack_file", "local_only", "composite"
-DELIVERY_MODE = "github_pages"
+DELIVERY_MODE = "telegram"#"github_pages"
 
 # ===== 복합 발송 설정 =====
-COMPOSITE_MODES = ["github_pages", "local_only"]  # 동시 실행할 발송 방식들
+COMPOSITE_MODES = ["telegram", "local_only"]#["github_pages", "local_only"]  # 동시 실행할 발송 방식들
 
 # ===== 로컬 파일 저장 설정 =====
 LOCAL_FILE_CONFIG = {

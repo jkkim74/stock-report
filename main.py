@@ -10,7 +10,9 @@ from notifiers import (
     GitHubPagesNotifier,
     SlackFileNotifier,
     LocalFileNotifier,
-    CompositeNotifier
+    CompositeNotifier,
+    TelegramNotifier,           # 추가
+    TelegramChannelNotifier     # 추가
 )
 from config import DELIVERY_MODE, COMPOSITE_MODES
 
@@ -31,6 +33,12 @@ def create_notifier(mode):
     
     elif mode == "slack_file":
         return SlackFileNotifier()
+    
+    elif mode == "telegram":              # 신규 추가
+        return TelegramNotifier()
+    
+    elif mode == "telegram_channel":      # 신규 추가 (채널용)
+        return TelegramChannelNotifier()
     
     elif mode == "local_only":
         return LocalFileNotifier()

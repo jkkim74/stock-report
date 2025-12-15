@@ -393,17 +393,303 @@ class EmailNotifier(BaseNotifier):
         }
 
 
+# notifiers.py (파일 끝부분에 추가)
+
+import tempfile
+import os
+from config import TELEGRAM_CONFIG
+
+
 class TelegramNotifier(BaseNotifier):
-    """텔레그램 발송 (미래 확장)"""
-    
-    def __init__(self, bot_token, chat_id):
-        self.bot_token = bot_token
-        self.chat_id = chat_id
+    """Telegram Bot을 통한 리포트 발송"""
     
     def send(self, report_data):
-        # TODO: 텔레그램 발송 로직 구현
-        return {
-            "success": False,
-            "message": "텔레그램 발송 기능 준비 중",
-            "url": ""
-        }
+        """Telegram으로 리포트 발송 (미리보기 + 파일)"""
+        try:
+            print("[Telegram] 발송 시작...")
+            
+            # 설정값 검증
+            bot_token = TELEGRAM_CONFIG["bot_token"]
+            chat_id = TELEGRAM_CONFIG["chat_id"]
+            
+            if not bot_token or bot_token.startswith("1234567890"):
+                return {
+                    "success": False,
+                    "message": "Telegram Bot Token이 설정되지 않았습니다. config.py를 확인하세요.",
+                    "url": ""
+                }
+            
+            results = []
+            
+            # 1. 미리보기 메시지 전송
+            if TELEGRAM_CONFIG.get("send_preview", True):
+                preview_result = self._send_preview_message(bot_token, chat_id, report_data)
+                results.append(("미리보기", preview_result))
+            
+            # 2. HTML 파일 전송
+            if TELEGRAM_CONFIG.get("send_as_file", True):
+                file_result = self._send_html_file(bot_token, chat_id, report_data)
+                results.append(("파일", file_result))
+            else:
+                # 파일 전송하지 않으면 상세 요약 메시지 전송
+                summary_result = self._send_detailed_summary(bot_token, chat_id, report_data)
+                results.append(("상세요약", summary_result))
+            
+            # 결과 종합
+            success_count = sum(1 for _, result in results if result["success"])
+            total_count = len(results)
+            
+            if success_count > 0:
+                print(f"[Telegram] 발송 완료! ({success_count}/{total_count} 성공)")
+                return {
+                    "success": True,
+                    "message": f"Telegram 발송 완료 ({success_count}/{total_count} 성공)",
+                    "url": f"https://t.me/{TELEGRAM_CONFIG.get('bot_username', 'bot')}"
+                }
+            else:
+                failed_messages = [f"{name}: {result['message']}" for name, result in results if not result["success"]]
+                return {
+                    "success": False,
+                    "message": f"Telegram 발송 실패: {'; '.join(failed_messages)}",
+                    "url": ""
+                }
+                
+        except Exception as e:
+            print(f"[Telegram] 예외 발생: {str(e)}")
+            return {"success": False, "message": f"Telegram 발송 오류: {str(e)}", "url": ""}
+    
+    def _send_preview_message(self, bot_token, chat_id, report_data):
+        """간단한 미리보기 메시지 전송"""
+        try:
+            message = f"""🚀 <b>AI 기반 프리미엄 추천 종목 리포트 v4</b>
+
+📅 <b>기준일:</b> {report_data.trade_date}
+⏰ <b>생성시간:</b> {report_data.metadata.get('generated_at', 'N/A')}
+
+📊 <b>분석 결과:</b>
+  🔥 추천주: {report_data.metadata.get('recommend_count', 0)}종목
+  ⭐ 프리미엄: {report_data.metadata.get('premium_count', 0)}종목  
+  👀 관심: {report_data.metadata.get('watch_count', 0)}종목
+
+📎 상세 리포트 파일을 전송합니다..."""
+
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": TELEGRAM_CONFIG.get("parse_mode", "HTML"),
+                "disable_web_page_preview": True
+            }
+            
+            response = requests.post(url, json=payload)
+            
+            if response.status_code == 200:
+                print("[Telegram] 미리보기 전송 완료")
+                return {"success": True, "message": "미리보기 전송 성공"}
+            else:
+                error_msg = response.json().get("description", response.text)
+                print(f"[Telegram] 미리보기 전송 실패: {error_msg}")
+                return {"success": False, "message": f"미리보기 실패: {error_msg}"}
+                
+        except Exception as e:
+            return {"success": False, "message": f"미리보기 오류: {str(e)}"}
+    
+    def _send_html_file(self, bot_token, chat_id, report_data):
+        """HTML 파일을 Telegram 문서로 전송"""
+        temp_file = None
+        try:
+            # 파일 크기 체크 (대략적)
+            file_size_mb = len(report_data.html_content.encode('utf-8')) / (1024 * 1024)
+            limit_mb = TELEGRAM_CONFIG.get("file_size_limit_mb", 45)
+            
+            if file_size_mb > limit_mb:
+                return {
+                    "success": False, 
+                    "message": f"파일 크기 초과 ({file_size_mb:.1f}MB > {limit_mb}MB)"
+                }
+            
+            # 안전한 임시 파일 생성
+            with tempfile.NamedTemporaryFile(
+                mode='w', 
+                encoding='utf-8', 
+                suffix='.html', 
+                delete=False
+            ) as f:
+                f.write(report_data.html_content)
+                temp_file = f.name
+            
+            # Telegram API로 문서 전송
+            url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+            
+            caption = f"""📊 <b>AI 프리미엄 리포트</b> ({report_data.trade_date})
+
+🎯 <b>분석 기준:</b> 시가총액≥3000억, 등락률≥5%, 거래대금≥1000억
+
+💡 다운로드 후 브라우저에서 열어보세요!
+⚠️ 투자 판단은 본인 책임입니다."""
+            
+            with open(temp_file, 'rb') as f:
+                files = {'document': (report_data.metadata["filename"], f, 'text/html')}
+                data = {
+                    'chat_id': chat_id,
+                    'caption': caption,
+                    'parse_mode': 'HTML'
+                }
+                
+                response = requests.post(url, files=files, data=data)
+            
+            # 임시 파일 정리
+            if temp_file and os.path.exists(temp_file):
+                os.remove(temp_file)
+            
+            if response.status_code == 200:
+                print("[Telegram] 파일 전송 완료")
+                return {"success": True, "message": "파일 전송 성공"}
+            else:
+                error_msg = response.json().get("description", response.text)
+                print(f"[Telegram] 파일 전송 실패: {error_msg}")
+                return {"success": False, "message": f"파일 전송 실패: {error_msg}"}
+                
+        except Exception as e:
+            # 예외 발생 시 임시 파일 정리
+            if temp_file and os.path.exists(temp_file):
+                os.remove(temp_file)
+            return {"success": False, "message": f"파일 전송 오류: {str(e)}"}
+    
+    def _send_detailed_summary(self, bot_token, chat_id, report_data):
+        """파일 대신 상세 텍스트 요약 전송"""
+        try:
+            message = f"""📊 <b>AI 기반 프리미엄 추천 종목 리포트 v4</b>
+
+📅 <b>기준일:</b> {report_data.trade_date}
+⏰ <b>생성시간:</b> {report_data.metadata.get('generated_at', 'N/A')}
+
+🎯 <b>분석 기준:</b>
+  • 시가총액 ≥ 3000억
+  • 등락률 ≥ 5%  
+  • 거래대금 ≥ 1000억
+
+📊 <b>분석 결과:</b>
+  🔥 추천주: {report_data.metadata.get('recommend_count', 0)}종목
+  ⭐ 프리미엄: {report_data.metadata.get('premium_count', 0)}종목
+  👀 관심: {report_data.metadata.get('watch_count', 0)}종목
+  📈 전체: {report_data.metadata.get('total_stocks', 0)}종목
+
+⚠️ <b>투자 유의사항:</b>
+데이터 기반 통계적 추천이므로 신중한 판단하에 투자하시기 바랍니다."""
+
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True
+            }
+            
+            response = requests.post(url, json=payload)
+            
+            if response.status_code == 200:
+                return {"success": True, "message": "상세 요약 전송 성공"}
+            else:
+                error_msg = response.json().get("description", response.text)
+                return {"success": False, "message": f"상세 요약 실패: {error_msg}"}
+                
+        except Exception as e:
+            return {"success": False, "message": f"상세 요약 오류: {str(e)}"}
+
+
+class TelegramChannelNotifier(BaseNotifier):
+    """Telegram 채널 발송 (공개 채널용)"""
+    
+    def send(self, report_data):
+        """Telegram 채널로 리포트 발송"""
+        try:
+            print("[Telegram Channel] 발송 시작...")
+            
+            bot_token = TELEGRAM_CONFIG["bot_token"]
+            channel_id = TELEGRAM_CONFIG.get("channel_id", TELEGRAM_CONFIG["chat_id"])
+            
+            # 채널 ID 형식 검증
+            if not (str(channel_id).startswith("@") or str(channel_id).startswith("-100")):
+                return {
+                    "success": False,
+                    "message": "채널 ID는 @channel_name 또는 -100xxxxxxxxx 형식이어야 합니다",
+                    "url": ""
+                }
+            
+            # 채널용 메시지 생성 및 전송
+            message = f"""📊 <b>AI 기반 프리미엄 추천 종목 리포트 v4</b>
+
+            📅 기준일: {report_data.trade_date}
+
+            🔥 추천주: {report_data.metadata.get('recommend_count', 0)}종목
+            ⭐ 프리미엄: {report_data.metadata.get('premium_count', 0)}종목  
+            👀 관심: {report_data.metadata.get('watch_count', 0)}종목
+
+            📎 상세 리포트는 첨부 파일을 확인하세요!
+
+            ⚠️ 투자 유의: 데이터 기반 통계적 추천이므로 신중한 판단 필요"""
+
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            payload = {
+                "chat_id": channel_id,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True
+            }
+            
+            response = requests.post(url, json=payload)
+            
+            if response.status_code == 200:
+                print("[Telegram Channel] 메시지 전송 완료")
+                
+                # 파일도 전송
+                file_result = self._send_channel_file(bot_token, channel_id, report_data)
+                
+                return {
+                    "success": True,
+                    "message": "Telegram 채널 발송 완료",
+                    "url": f"https://t.me/{str(channel_id).lstrip('@')}"
+                }
+            else:
+                error_msg = response.json().get("description", response.text)
+                return {
+                    "success": False,
+                    "message": f"채널 발송 실패: {error_msg}",
+                    "url": ""
+                }
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"채널 발송 오류: {str(e)}",
+                "url": ""
+            }
+    
+    def _send_channel_file(self, bot_token, channel_id, report_data):
+        """채널에 파일 전송"""
+        temp_file = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode='w', encoding='utf-8', suffix='.html', delete=False
+            ) as f:
+                f.write(report_data.html_content)
+                temp_file = f.name
+            
+            url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+            
+            with open(temp_file, 'rb') as f:
+                files = {'document': (report_data.metadata["filename"], f, 'text/html')}
+                data = {'chat_id': channel_id}
+                requests.post(url, files=files, data=data)
+            
+            if temp_file and os.path.exists(temp_file):
+                os.remove(temp_file)
+                
+            return True
+            
+        except Exception as e:
+            print(f"[Telegram Channel] 파일 전송 실패: {str(e)}")
+            if temp_file and os.path.exists(temp_file):
+                os.remove(temp_file)
+            return False
