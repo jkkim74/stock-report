@@ -24,7 +24,7 @@ GITHUB_CONFIG = {
 # ===== Slack 설정 =====
 SLACK_CONFIG = {
     # Webhook URL (GitHub Pages 알림용)
-    "webhook_url": "https://hooks.slack.com/services/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",
+    "webhook_url": "https://hooks.slack.com/services/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",
     
     # Bot Token (파일 업로드용)
     "bot_token": "xoxb-9745985197379-10123228976753-ahTerLqgVeOoiQCL8gdmsJOL",

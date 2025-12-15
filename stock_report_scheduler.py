@@ -56,7 +56,7 @@ def main():
     
     # 스케줄 설정 (한국 주식시장 기준)
     # 매일 오후 3시 40분에 실행 (장마감 후)
-    schedule.every().day.at("10:43").do(run_stock_report)
+    schedule.every().day.at("10:54").do(run_stock_report)
     
     # 평일만 실행하고 싶다면 (선택사항):
     # schedule.every().monday.at("15:40").do(run_stock_report)
