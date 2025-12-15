@@ -28,7 +28,7 @@ def run_stock_report():
         # stock_report.py 실행
         # ✅ 수정된 코드 (즉시 해결)
         result = subprocess.run(
-            ["python", "stock_report.py"],
+            ["python", "main.py"],
             capture_output=True,
             text=True,
             encoding='utf-8',
