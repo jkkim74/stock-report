@@ -6,7 +6,12 @@
 - 복수 리포트 지원 (Premium Stock + Gap Up & Down Risk)
 """
 
-from report_generator import generate_premium_stock_report, getUpAndDownReport
+from report_generator import ( 
+                              generate_premium_stock_report, 
+                              getUpAndDownReport, 
+                              generate_market_summary_report,  # 추가
+                              generate_market_supply_report  # 추가
+)
 from notifiers import (
     GitHubPagesNotifier,
     SlackFileNotifier,
@@ -87,6 +92,26 @@ def process_and_send_report(generator_func, report_name, notifier):
             kosdaq = report_data.metadata.get('kosdaq_scores', {})
             print(f"   - KOSPI: 급등 {kospi.get('up', 0)}/급락 {kospi.get('down', 0)}")
             print(f"   - KOSDAQ: 급등 {kosdaq.get('up', 0)}/급락 {kosdaq.get('down', 0)}")
+        # 기존 elif 블록들 다음에 추가
+        elif report_data.metadata.get('report_type') == 'market_summary':
+            k_comp = report_data.metadata.get('kospi_composite')
+            q_comp = report_data.metadata.get('kosdaq_composite')
+            k_band = report_data.metadata.get('kospi_band', 'N/A')
+            q_band = report_data.metadata.get('kosdaq_band', 'N/A')
+            
+            # 🔧 수정된 출력 방식 (f-string 오류 방지)
+            k_str = f"{k_comp:.1f}" if k_comp is not None else "N/A"
+            q_str = f"{q_comp:.1f}" if q_comp is not None else "N/A"
+            
+            print(f"   - KOSPI: {k_str} ({k_band})")
+            print(f"   - KOSDAQ: {q_str} ({q_band})")
+        elif report_data.metadata.get('report_type') == 'market_supply':
+            print(f"   - 프리미엄: {report_data.metadata.get('premium_count', 0)}종목")
+            print(f"   - Fast: {report_data.metadata.get('fast_count', 0)}종목")
+            print(f"   - 과열: {report_data.metadata.get('overheat_count', 0)}종목")
+            print(f"   - 관심: {report_data.metadata.get('interest_count', 0)}종목")
+            print(f"   - 총 분석: {report_data.metadata.get('total_analyzed', 0)}종목")
+
         
         # 발송
         print(f"📤 {report_name} 발송 중...")
@@ -112,11 +137,10 @@ def main():
     """메인 실행 함수"""
     
     print("\n" + "="*70)
-    print("🚀 통합 AI 리포트 시스템 v5 - 실행 시작")
+    print("🚀 통합 AI 리포트 시스템 v7 - 실행 시작")  # 버전 업
     print("="*70)
     print(f"📤 발송 모드: {DELIVERY_MODE}\n")
     
-    # 발송자 생성 (한 번만 생성하여 재사용)
     try:
         notifier = create_notifier(DELIVERY_MODE)
     except Exception as e:
@@ -135,21 +159,29 @@ def main():
     if process_and_send_report(getUpAndDownReport, "Gap Up & Down 리스크 리포트", notifier):
         success_count += 1
     
-    # 최종 요약
+    # 3. Market Summary 리포트
+    print("-" * 70)
+    if process_and_send_report(generate_market_summary_report, "Market Summary 리포트", notifier):
+        success_count += 1
+    
+    # 4. Market Supply 리포트 (신규 추가)
+    print("-" * 70)
+    if process_and_send_report(generate_market_supply_report, "Market Supply 리포트", notifier):
+        success_count += 1
+    
+    # 최종 요약 (4개로 변경)
     print("\n" + "="*70)
-    print(f"🏁 전체 작업 완료 - 성공: {success_count}/2")
+    print(f"🏁 전체 작업 완료 - 성공: {success_count}/4")
     print("="*70 + "\n")
 
 
+def main_supply_only():
+    """Market Supply 리포트만 실행"""
+    notifier = create_notifier(DELIVERY_MODE)
+    process_and_send_report(generate_market_supply_report, "Market Supply 리포트", notifier)
+
 def main_custom(delivery_mode=None):
-    """
-    커스텀 실행 함수 (특정 발송 방식 지정)
-    
-    Args:
-        delivery_mode: 발송 방식 (None이면 config.py의 설정 사용)
-    """
-    
-    # 발송자 생성
+    """커스텀 실행 함수 수정 (4개 리포트 지원)"""
     mode = delivery_mode or DELIVERY_MODE
     try:
         notifier = create_notifier(mode)
@@ -157,7 +189,6 @@ def main_custom(delivery_mode=None):
         print(f"❌ Notifier 생성 실패: {str(e)}")
         return
     
-    # 두 리포트 순차 실행
     print(f"📤 커스텀 발송 모드: {mode}")
     
     results = []
@@ -165,8 +196,12 @@ def main_custom(delivery_mode=None):
         results.append("프리미엄 주식")
     if process_and_send_report(getUpAndDownReport, "Gap Up & Down", notifier):
         results.append("Gap Up & Down")
+    if process_and_send_report(generate_market_summary_report, "Market Summary", notifier):
+        results.append("Market Summary")
+    if process_and_send_report(generate_market_supply_report, "Market Supply", notifier):
+        results.append("Market Supply")
     
-    print(f"\n✅ 커스텀 실행 완료 - 성공: {len(results)}/2")
+    print(f"\n✅ 커스텀 실행 완료 - 성공: {len(results)}/4")
 
 
 # 개별 실행 함수들 (선택적 사용)

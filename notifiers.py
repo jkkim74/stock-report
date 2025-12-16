@@ -485,6 +485,37 @@ class TelegramNotifier(BaseNotifier):
                     f"📉 KOSDAQ: 급등 {kosdaq_scores.get('up', 0)}/급락 {kosdaq_scores.get('down', 0)}\n\n"
                     f"📎 상세 리포트 파일을 전송합니다..."
                 )
+             # 기존 elif 블록들 다음에 추가
+            elif report_data.metadata.get('report_type') == 'market_summary':
+                k_comp = report_data.metadata.get('kospi_composite')
+                q_comp = report_data.metadata.get('kosdaq_composite')
+                k_band = report_data.metadata.get('kospi_band', 'N/A')
+                q_band = report_data.metadata.get('kosdaq_band', 'N/A')
+                
+                # 🔧 수정된 메시지 생성 (f-string 오류 방지)
+                k_str = f"{k_comp:.1f}" if k_comp is not None else "N/A"
+                q_str = f"{q_comp:.1f}" if q_comp is not None else "N/A"
+                
+                message = (
+                    f"📊 <b>Market Summary v10.8</b>\n\n"
+                    f"📅 <b>기준일:</b> {report_data.trade_date}\n\n"
+                    f"📈 <b>시장 컨디션:</b>\n"
+                    f"• KOSPI: {k_str} ({k_band})\n"
+                    f"• KOSDAQ: {q_str} ({q_band})\n\n"
+                    f"📎 상세 리포트 파일을 전송합니다..."
+                )
+            # 기존 elif 블록들 다음에 추가
+            elif report_data.metadata.get('report_type') == 'market_supply':
+                message = (
+                    f"📊 <b>기관·외국인 수급 리포트 Rev9.1</b>\n\n"
+                    f"📅 <b>기준일:</b> {report_data.trade_date}\n\n"
+                    f"📈 <b>분석 결과:</b>\n"
+                    f"💎 프리미엄: {report_data.metadata.get('premium_count', 0)}종목\n"
+                    f"🚀 Fast: {report_data.metadata.get('fast_count', 0)}종목\n"
+                    f"🔥 과열: {report_data.metadata.get('overheat_count', 0)}종목\n"
+                    f"👀 관심: {report_data.metadata.get('interest_count', 0)}종목\n\n"
+                    f"📎 상세 리포트 파일을 전송합니다..."
+                )
             else:
                 # 기본 메시지 (새로운 리포트 타입 대응)
                 message = (

@@ -30,6 +30,22 @@ from tqdm import tqdm
 from pytz import timezone
 from config import ANALYSIS_CONFIG
 
+import warnings
+from io import BytesIO
+
+# matplotlib 설정은 이미 존재하므로 추가 설정 불필요
+
+import logging
+import requests
+import FinanceDataReader as fdr
+
+# Market Supply용 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+
 # Windows 콘솔 UTF-8 인코딩 설정
 if sys.platform == 'win32':
     try:
@@ -1328,6 +1344,1277 @@ def generate_crypto_report():
     # TODO: 암호화폐 분석 로직 구현
     pass
 
+
+# ===== Market Summary Report 전용 함수들 =====
+
+# ETF 설정 상수
+ETF_KOSPI_MS = {
+    "KODEX200": {"yf": "069500.KS", "w": 1.0, "sign": +1, "vol_win": 20},
+    "KODEX_레버": {"yf": "122630.KS", "w": 1.5, "sign": +1, "vol_win": 20},
+    "KODEX_인버": {"yf": "114800.KS", "w": 1.5, "sign": -1, "vol_win": 20},
+}
+
+ETF_KOSDAQ_MS = {
+    "KQ150": {"yf": "229200.KS", "w": 1.0, "sign": +1, "vol_win": 30},
+    "KQ150_레버": {"yf": "233740.KS", "w": 1.7, "sign": +1, "vol_win": 30},
+    "KQ150_인버": {"yf": "251340.KS", "w": 1.7, "sign": -1, "vol_win": 30},
+}
+
+def _ms_normalize(df):
+    """Market Summary용 DataFrame 인덱스 정규화"""
+    if df is None or df.empty:
+        return df
+    idx = pd.to_datetime(df.index)
+    try:
+        idx = idx.tz_localize(None)
+    except Exception:
+        pass
+    df = df.copy()
+    df.index = idx.normalize()
+    return df
+
+def _ms_flatten_yf_columns(df):
+    """Market Summary용 yfinance MultiIndex 컬럼 평탄화"""
+    if df is None or df.empty:
+        return df
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.copy()
+        df.columns = df.columns.get_level_values(0)
+    return df
+
+def _ms_make_sparkline(series):
+    """Sparkline 이미지를 base64로 생성"""
+    s = series.dropna().tail(15)
+    if len(s) < 2:
+        return ""
+
+    fig, ax = plt.subplots(figsize=(9, 2.2))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    ax.plot(s.values, linewidth=4, color="#d6286a")
+    ax.axis("off")
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.1, transparent=True)
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode()
+
+def _ms_sparkline_comment(series):
+    """Sparkline 해석 텍스트 생성"""
+    s = series.dropna().tail(15)
+    if len(s) < 5:
+        return "최근 데이터가 부족해 흐름 판단이 어렵습니다."
+
+    first, lastv = s.iloc[0], s.iloc[-1]
+    delta = lastv - first
+    slope = delta / max(len(s) - 1, 1)
+
+    if delta >= 20 and slope > 0:
+        return "Composite 흐름이 뚜렷한 상승 추세로 전환된 모습입니다."
+    if 5 <= delta < 20 and slope > 0:
+        return "Composite는 완만한 상승 기울기를 유지하고 있습니다."
+    if -5 < delta < 5:
+        return "Composite가 좁은 박스권에서 횡보하는 모습입니다."
+    if delta <= -20 and slope < 0:
+        return "Composite가 뚜렷한 하락 방향으로 전환되어 체력이 약해진 상태입니다."
+    if -20 < delta <= -5 and slope < 0:
+        return "Composite가 조정 구간에 진입한 모습입니다."
+    return "단기적으로 상·하방 신호가 섞인 중립적인 흐름입니다."
+
+def _ms_load_index(ticker, days=300):
+    """Market Summary용 지수 데이터 로딩"""
+    end = datetime.now(TZ).date()
+    start = end - timedelta(days=days)
+
+    try:
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        q = yf.download(
+            ticker,
+            start=start,
+            end=end + timedelta(days=1),
+            progress=False,
+            auto_adjust=False,
+        )
+        q = _ms_flatten_yf_columns(q)
+        q = _ms_normalize(q)
+
+        if q is None or q.empty:
+            return None
+
+        df = pd.DataFrame(index=q.index)
+        df["Open"] = q["Open"]
+        df["Index"] = q["Close"]
+        df["Index_ret(%)"] = df["Index"].pct_change() * 100
+        return df[["Open", "Index", "Index_ret(%)"]]
+    except Exception as e:
+        print(f"[WARNING] 지수 {ticker} 로딩 실패: {e}")
+        return None
+
+def _ms_load_etf_flow(etfs, days=300):
+    """Market Summary용 ETF Flow Proxy 계산"""
+    end = datetime.now(TZ).date()
+    start = end - timedelta(days=days)
+    combined = pd.DataFrame()
+
+    for name, info in etfs.items():
+        try:
+            print(f"[Market Summary] ETF {name} 로딩 중...")
+            q = yf.download(
+                info["yf"],
+                start=start,
+                end=end + timedelta(days=1),
+                progress=False,
+                auto_adjust=False,
+            )
+            q = _ms_flatten_yf_columns(q)
+            q = _ms_normalize(q)
+
+            if q is None or q.empty:
+                print(f"[WARNING] ETF {name} 데이터 없음")
+                continue
+
+            df = pd.DataFrame(index=q.index)
+            df["Close"] = q["Close"]
+            df["Volume"] = q["Volume"]
+
+            ma5 = df["Close"].rolling(5).mean()
+            df["price_strength"] = (df["Close"] / ma5 - 1) * 100
+
+            vol_ma = df["Volume"].rolling(info["vol_win"]).mean()
+            df["vol_ratio"] = (df["Volume"] / vol_ma).clip(0, 10)
+
+            df[name] = info["sign"] * info["w"] * (df["price_strength"] * df["vol_ratio"])
+            combined = df[[name]] if combined.empty else combined.join(df[[name]], how="outer")
+        except Exception as e:
+            print(f"[WARNING] ETF {name} 처리 실패: {e}")
+            continue
+
+    if combined.empty:
+        return None
+
+    combined = combined.sort_index()
+    combined["Flow_Proxy"] = combined.sum(axis=1)
+    return combined[["Flow_Proxy"]]
+
+def _ms_load_macro(days=320):
+    """Market Summary용 매크로 데이터 (환율 + 금리) 로딩"""
+    end = datetime.now(TZ).date()
+    start = end - timedelta(days=days + 60)
+
+    try:
+        fx = yf.download("KRW=X", start=start, end=end + timedelta(days=1), progress=False, auto_adjust=False)
+        rt = yf.download("^TNX", start=start, end=end + timedelta(days=1), progress=False, auto_adjust=False)
+
+        fx = _ms_normalize(_ms_flatten_yf_columns(fx))
+        rt = _ms_normalize(_ms_flatten_yf_columns(rt))
+
+        if fx is None or fx.empty:
+            return None
+
+        # TNX는 휴일에 비는 경우가 있어도 리포트는 돌아가야 함
+        if rt is None or rt.empty:
+            rt = pd.DataFrame(index=fx.index, data={"Close": np.nan})
+
+        idx = sorted(set(fx.index) | set(rt.index))
+        df = pd.DataFrame(index=idx)
+        df["FX"] = fx["Close"].reindex(idx)
+        df["Rate"] = rt["Close"].reindex(idx)
+
+        df["FX_20d(%)"] = (df["FX"] / df["FX"].shift(20) - 1) * 100
+        df["Rate_20d"] = df["Rate"] - df["Rate"].shift(20)
+
+        return df[["FX_20d(%)", "Rate_20d"]].sort_index()
+    except Exception as e:
+        print(f"[WARNING] 매크로 데이터 로딩 실패: {e}")
+        return None
+
+def _ms_compute_scores(df, trend_s, trend_l, ws, wl, name):
+    """Market Summary용 점수 계산 (Flow/Trend/Macro/Breadth)"""
+    df = df.copy().sort_index()
+
+    # Flow 점수
+    base = df["Flow_Proxy"].abs().rolling(20).mean().clip(lower=10)
+    df["Flow_score"] = (df["Flow_Proxy"] / base) * 100
+
+    # Trend 점수
+    ma_s = df["Index"].rolling(trend_s).mean()
+    ma_l = df["Index"].rolling(trend_l).mean()
+    df["trend_s"] = (df["Index"] / ma_s - 1) * 100
+    df["trend_l"] = (df["Index"] / ma_l - 1) * 100
+    df["Trend_score"] = ws * df["trend_s"] + wl * df["trend_l"]
+
+    # Breadth 점수
+    low = df["Index"].rolling(60).min()
+    high = df["Index"].rolling(60).max()
+    rng = (high - low).replace(0, np.nan)
+    df["ClosePos"] = (df["Index"] - low) / rng * 100
+    ma20 = df["Index"].rolling(20).mean()
+    df["MA_gap"] = (df["Index"] / ma20 - 1) * 100
+    df["Breadth_score"] = (
+        0.7 * ((df["ClosePos"] - 50) / 50 * 100) +
+        0.3 * (df["MA_gap"].clip(-10, 10) / 10 * 100)
+    )
+
+    # Macro 점수 (결측 보호)
+    if "FX_20d(%)" in df.columns and "Rate_20d" in df.columns:
+        df[["FX_20d(%)", "Rate_20d"]] = df[["FX_20d(%)", "Rate_20d"]].ffill()
+        fx = df["FX_20d(%)"].fillna(0)
+        rt = df["Rate_20d"].fillna(0)
+        df["Macro_score"] = -(0.6 * fx + 0.4 * rt)
+    else:
+        df["Macro_score"] = 0.0
+
+    # 한국어 친화 지수
+    df["수급 강도"] = df["Flow_score"].clip(-60, 60) / 60 * 100
+    df["추세 강도"] = df["Trend_score"].clip(-20, 20) / 20 * 100
+    df["외부 환경 영향"] = df["Macro_score"].clip(-5, 5) / 5 * 100
+    df["시장 건강도"] = df["Breadth_score"]
+
+    # Composite 가중치
+    if name == "KOSPI":
+        w = (0.35, 0.25, 0.25, 0.15)
+    else:
+        w = (0.40, 0.20, 0.15, 0.25)
+
+    df["Composite"] = (
+        w[0] * df["수급 강도"] +
+        w[1] * df["추세 강도"] +
+        w[2] * df["외부 환경 영향"] +
+        w[3] * df["시장 건강도"]
+    )
+    return df
+
+def _ms_composite_band(c):
+    """Composite 구간 판정"""
+    if pd.isna(c):
+        return "데이터 부족"
+    if c >= 40:
+        return "강한 상승 우위"
+    if c >= 20:
+        return "상승 우위"
+    if c >= 5:
+        return "약한 상승"
+    if c <= -40:
+        return "강한 하락 우위"
+    if c <= -20:
+        return "하락 우위"
+    if c <= -5:
+        return "약한 하락"
+    return "중립"
+
+def _ms_strategy_guide(c, market_name):
+    """전략 가이드 텍스트 생성"""
+    if pd.isna(c):
+        return f"{market_name}: 데이터 결측 구간입니다. 의사결정은 보류하고, 다음 거래일 데이터 확인을 권장합니다."
+
+    if c >= 40:
+        return f"{market_name}: 강한 상승 우위 구간입니다. 추격매수보다는 '눌림 분할매수'와 '수익 구간 분할익절'을 권장합니다. 손절 기준을 사전에 고정하고 과열 종목은 비중을 제한하세요."
+    if 20 <= c < 40:
+        return f"{market_name}: 상승 우위 구간입니다. 우량/주도 섹터 중심으로 분할 진입을 고려할 만하며, 변동성 확대 시 추가매수 대신 비중 관리가 유리합니다."
+    if 5 <= c < 20:
+        return f"{market_name}: 약한 상승 구간입니다. 시장은 올라가도 종목 간 편차가 커질 수 있으므로 '선별 매매'가 유리합니다. 신규 진입은 소액/분할로 제한하고, 수익이 나면 빠른 일부익절로 리스크를 줄이세요."
+    if -5 < c < 5:
+        return f"{market_name}: 중립 구간입니다. 방향성이 약해 '현금 비중'과 '관망'이 합리적입니다. 매매를 하더라도 짧은 손절/짧은 목표로 대응하는 것이 안정적입니다."
+    if -20 < c <= -5:
+        return f"{market_name}: 약한 하락 구간입니다. 신규 매수는 보수적으로 접근하고, 기존 보유는 방어적 손절 기준을 강화하세요. 리바운드 매매는 '확인' 이후에만 소액으로 제한하는 것이 좋습니다."
+    if -40 < c <= -20:
+        return f"{market_name}: 하락 우위 구간입니다. 비중 축소와 현금 확보가 우선이며, 공격적 매수보다는 '관망/방어'가 유리합니다."
+    return f"{market_name}: 강한 하락 우위 구간입니다. 리스크 오프 국면으로 보고 현금 비중을 높이는 전략이 합리적입니다."
+
+def _ms_overall_strategy_comment(k, q):
+    """종합 전략 코멘트"""
+    if pd.isna(k) or pd.isna(q):
+        return "일부 데이터 결측이 있어 해석 신뢰도가 낮습니다. 다음 거래일 데이터가 정상 반영된 뒤 다시 확인하는 것을 권장합니다."
+
+    if k >= 20 and q >= 20:
+        return "양 시장 모두 상승 우위입니다. 전반적으로 매수 환경이 우호적이나, 과열 구간에서는 추격매수보다 분할 접근과 이익 실현 규칙이 중요합니다."
+    if k >= 20 > q:
+        return "KOSPI가 상대적으로 강하고 KOSDAQ은 둔화된 상태입니다. 대형주/우량주 중심으로 방어적 상승 전략이 유리하며, 테마/중소형주는 선별이 필요합니다."
+    if q >= 20 > k:
+        return "KOSDAQ이 상대적으로 강한 구간입니다. 중소형 성장주/테마가 유리할 수 있으나 변동성도 커질 수 있어 분할매수와 손절 규칙을 더 엄격히 적용하는 것이 좋습니다."
+    if k <= -20 and q <= -20:
+        return "양 시장 모두 하락 우위입니다. 비중 축소와 리스크 관리가 최우선이며, 반등은 '기회'보다 '점검' 관점에서 보수적으로 대응하는 것이 안전합니다."
+    return "시장 방향성이 엇갈리는 혼조 구간입니다. 지수 베팅보다 개별 종목의 추세/수급 확인이 중요하며, 현금 비중을 확보한 상태에서 선별적으로 대응하는 것이 유리합니다."
+
+def _ms_build_html(df_k, df_q):
+    """Market Summary HTML 생성 (파일 저장 없이 문자열만 반환)"""
+    df_k = df_k.sort_index()
+    df_q = df_q.sort_index()
+
+    last_k = df_k.iloc[-1]
+    last_q = df_q.iloc[-1]
+
+    ck = float(last_k["Composite"]) if pd.notna(last_k["Composite"]) else np.nan
+    cq = float(last_q["Composite"]) if pd.notna(last_q["Composite"]) else np.nan
+
+    spark_k = _ms_make_sparkline(df_k["Composite"])
+    spark_q = _ms_make_sparkline(df_q["Composite"])
+    spark_k_txt = _ms_sparkline_comment(df_k["Composite"])
+    spark_q_txt = _ms_sparkline_comment(df_q["Composite"])
+
+    band_k = _ms_composite_band(ck)
+    band_q = _ms_composite_band(cq)
+
+    overall = _ms_overall_strategy_comment(ck, cq)
+    guide_k = _ms_strategy_guide(ck, "KOSPI")
+    guide_q = _ms_strategy_guide(cq, "KOSDAQ")
+
+    # 표 생성
+    cols = ["Index", "Index_ret(%)", "수급 강도", "추세 강도", "외부 환경 영향", "시장 건강도", "Composite"]
+    t1 = df_k[cols].tail(15).sort_index(ascending=False).round(2).to_html(border=0, index=True)
+    t2 = df_q[cols].tail(15).sort_index(ascending=False).round(2).to_html(border=0, index=True)
+
+    # 배경색 결정
+    def comp_bg(c):
+        if pd.isna(c):
+            return "linear-gradient(135deg, #ffffff, #ffffff)"
+        if c >= 20:
+            return "linear-gradient(135deg, #ffe4ef, #ffffff)"
+        if c <= -20:
+            return "linear-gradient(135deg, #e7f3ff, #ffffff)"
+        return "linear-gradient(135deg, #ffffff, #ffffff)"
+
+    bg_k = comp_bg(ck)
+    bg_q = comp_bg(cq)
+    gen_time = now_kr_str()
+
+    # Composite 설명 블록
+    composite_legend_html = """
+    <div class="card">
+      <div class="card-title">Composite 지수 해석 (숫자별 의미)</div>
+      <div class="legend-grid">
+        <div class="legend-item up-strong">
+          <div class="legend-badge">+40 이상</div>
+          <div class="legend-text">강한 상승 우위. 주도주/우량주 중심으로 눌림 분할 대응이 유리.</div>
+        </div>
+        <div class="legend-item up">
+          <div class="legend-badge">+20 ~ +40</div>
+          <div class="legend-text">상승 우위. 선별 매수 가능 구간. 과열 시 비중 관리 필요.</div>
+        </div>
+        <div class="legend-item up-weak">
+          <div class="legend-badge">+5 ~ +20</div>
+          <div class="legend-text">약한 상승. 종목 간 편차 확대 가능. 신규 진입은 보수적으로.</div>
+        </div>
+        <div class="legend-item neutral">
+          <div class="legend-badge">-5 ~ +5</div>
+          <div class="legend-text">중립. 방향성 약함. 관망/현금 비중 유지가 합리적.</div>
+        </div>
+        <div class="legend-item down-weak">
+          <div class="legend-badge">-20 ~ -5</div>
+          <div class="legend-text">약한 하락. 신규 매수 제한. 손절/방어 기준 강화.</div>
+        </div>
+        <div class="legend-item down">
+          <div class="legend-badge">-40 ~ -20</div>
+          <div class="legend-text">하락 우위. 비중 축소·현금 확보 우선.</div>
+        </div>
+        <div class="legend-item down-strong">
+          <div class="legend-badge">-40 이하</div>
+          <div class="legend-text">강한 하락 우위. 리스크 오프. 공격적 매수 자제.</div>
+        </div>
+      </div>
+      <div class="note">
+        Composite는 수급·추세·대외환경·시장건강도를 가중합한 "시장 컨디션 지표"이며, 수익을 보장하지 않습니다.
+      </div>
+    </div>
+    """
+
+    html = f"""
+    <!doctype html>
+    <html lang="ko">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+      <title>Market Summary v10.8</title>
+      <style>
+        :root {{
+          --bg: #f5f6f8; --card: rgba(255,255,255,0.92); --text: #111827; --muted: #6b7280; 
+          --accent: #d6286a; --shadow: 0 10px 30px rgba(0,0,0,0.10); --shadow2: 0 6px 18px rgba(0,0,0,0.08); 
+          --radius: 22px;
+        }}
+        body {{
+          margin: 0; background: radial-gradient(1200px 800px at 15% 10%, #ffe8f1 0%, rgba(255,232,241,0) 55%),
+                      radial-gradient(1100px 700px at 85% 18%, #e9f4ff 0%, rgba(233,244,255,0) 55%), var(--bg);
+          font-family: "맑은 고딕", system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: var(--text);
+        }}
+        .wrap {{ max-width: 1080px; margin: 0 auto; padding: 18px 16px 40px 16px; }}
+        .topbar {{ position: sticky; top: 0; z-index: 20; backdrop-filter: blur(16px); 
+                   background: rgba(15, 23, 42, 0.78); color: #fff; border-bottom: 1px solid rgba(255,255,255,0.10); }}
+        .topbar-inner {{ max-width: 1080px; margin: 0 auto; padding: 14px 16px; display:flex; 
+                        justify-content: space-between; align-items: center; gap: 10px; }}
+        .topbar-title {{ font-weight: 900; font-size: 18px; letter-spacing: -0.2px; }}
+        .topbar-meta {{ font-size: 13px; color: rgba(255,255,255,0.85); white-space: nowrap; }}
+        .hero {{ margin-top: 16px; background: linear-gradient(135deg, rgba(0,0,0,0.92), rgba(17,24,39,0.92)); 
+                 border-radius: var(--radius); padding: 22px 20px; box-shadow: var(--shadow); color: #fff; }}
+        .hero .h-title {{ font-size: 22px; font-weight: 900; margin-bottom: 10px; color: #ffd700; letter-spacing: -0.3px; }}
+        .hero .h-text {{ font-size: 16px; line-height: 1.8; font-weight: 650; color: rgba(255,255,255,0.95); }}
+        .hero .h-note {{ margin-top: 10px; font-size: 13px; color: rgba(255,255,255,0.75); line-height: 1.6; }}
+        .card {{ margin-top: 16px; background: var(--card); border-radius: var(--radius); padding: 18px 18px; 
+                 box-shadow: var(--shadow2); border: 1px solid rgba(17,24,39,0.06); }}
+        .card-title {{ font-size: 18px; font-weight: 900; letter-spacing: -0.2px; margin-bottom: 12px; }}
+        .market-card {{ padding: 18px 18px 16px 18px; }}
+        .market-header {{ display:flex; justify-content: space-between; align-items: flex-end; gap: 10px; 
+                         flex-wrap: wrap; margin-bottom: 10px; }}
+        .market-name {{ font-size: 22px; font-weight: 950; letter-spacing: -0.4px; color: var(--accent); }}
+        .comp-value {{ font-size: 34px; font-weight: 950; letter-spacing: -0.6px; }}
+        .pill {{ display:inline-flex; align-items:center; gap:8px; padding: 8px 12px; border-radius: 999px; 
+                 font-size: 13px; font-weight: 800; background: rgba(17,24,39,0.06); color: #111827; }}
+        .pill .dot {{ width: 10px; height: 10px; border-radius: 999px; background: #111827; opacity: 0.8; }}
+        .spark-row {{ display:flex; align-items:center; justify-content: space-between; gap: 14px; 
+                     flex-wrap: wrap; margin-top: 8px; }}
+        .spark-row img {{ max-width: 520px; width: 100%; height: auto; }}
+        .spark-text {{ flex: 1; min-width: 240px; font-size: 15px; color: #111827; line-height: 1.7; }}
+        .kpis {{ margin-top: 12px; display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }}
+        .kpi {{ background: rgba(255,255,255,0.85); border: 1px solid rgba(17,24,39,0.06); 
+               border-radius: 16px; padding: 12px 12px; }}
+        .kpi .k {{ font-size: 13px; color: var(--muted); font-weight: 800; }}
+        .kpi .v {{ margin-top: 6px; font-size: 20px; font-weight: 950; letter-spacing: -0.3px; }}
+        .guide {{ margin-top: 12px; background: rgba(17,24,39,0.04); border: 1px solid rgba(17,24,39,0.08); 
+                 border-radius: 18px; padding: 14px 14px; font-size: 15px; line-height: 1.8; color: #111827; }}
+        .legend-grid {{ display: grid; grid-template-columns: 1fr; gap: 10px; }}
+        .legend-item {{ border-radius: 18px; padding: 12px 12px; border: 1px solid rgba(17,24,39,0.06); 
+                       background: rgba(255,255,255,0.70); }}
+        .legend-badge {{ display:inline-block; font-size: 13px; font-weight: 950; padding: 6px 10px; 
+                        border-radius: 999px; background: rgba(17,24,39,0.08); margin-bottom: 8px; }}
+        .legend-text {{ font-size: 15px; line-height: 1.7; color: #111827; }}
+        .up-strong {{ background: linear-gradient(135deg, rgba(255,208,229,0.75), rgba(255,255,255,0.70)); }}
+        .up {{ background: linear-gradient(135deg, rgba(255,228,239,0.85), rgba(255,255,255,0.70)); }}
+        .up-weak {{ background: linear-gradient(135deg, rgba(255,245,249,0.95), rgba(255,255,255,0.70)); }}
+        .neutral {{ background: linear-gradient(135deg, rgba(245,246,248,0.95), rgba(255,255,255,0.70)); }}
+        .down-weak {{ background: linear-gradient(135deg, rgba(239,246,255,0.95), rgba(255,255,255,0.70)); }}
+        .down {{ background: linear-gradient(135deg, rgba(231,243,255,0.95), rgba(255,255,255,0.70)); }}
+        .down-strong {{ background: linear-gradient(135deg, rgba(211,232,255,0.95), rgba(255,255,255,0.70)); }}
+        .note {{ margin-top: 10px; font-size: 13px; color: var(--muted); line-height: 1.7; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+        table thead th {{ text-align: right; background: rgba(17,24,39,0.04); padding: 10px 10px; 
+                         border-bottom: 1px solid rgba(17,24,39,0.10); font-weight: 900; }}
+        table tbody td {{ text-align: right; padding: 10px 10px; border-bottom: 1px solid rgba(17,24,39,0.08); 
+                         font-weight: 650; }}
+        table thead th:first-child, table tbody td:first-child {{ text-align: center; font-weight: 900; }}
+        @media (max-width: 768px) {{
+          .wrap {{ padding: 14px 12px 34px 12px; }}
+          .hero {{ padding: 18px 14px; }}
+          .hero .h-title {{ font-size: 20px; }}
+          .hero .h-text {{ font-size: 16px; }}
+          .market-name {{ font-size: 21px; }}
+          .comp-value {{ font-size: 32px; }}
+          .spark-text {{ font-size: 15px; }}
+          .kpis {{ grid-template-columns: 1fr; }}
+          table {{ font-size: 12px; }}
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="topbar">
+        <div class="topbar-inner">
+          <div class="topbar-title">Market Summary v10.8</div>
+          <div class="topbar-meta">생성: {gen_time}</div>
+        </div>
+      </div>
+
+      <div class="wrap">
+        <div class="hero">
+          <div class="h-title">한국 주식시장 전략 코멘트</div>
+          <div class="h-text">{overall}</div>
+          <div class="h-note">
+            본 리포트는 과거 데이터 기반의 확률적 가이드이며 미래 수익을 보장하지 않습니다. 최종 투자 판단과 책임은 투자자 본인에게 있습니다.
+          </div>
+        </div>
+
+        <div class="card market-card" style="background:{bg_k};">
+          <div class="market-header">
+            <div>
+              <div class="market-name">KOSPI</div>
+              <div class="pill"><span class="dot"></span>Composite 구간: {band_k}</div>
+            </div>
+            <div class="comp-value">{("—" if pd.isna(ck) else f"{ck:.1f}")}</div>
+          </div>
+
+          <div class="spark-row">
+            {"<img src='data:image/png;base64," + spark_k + "'>" if spark_k else ""}
+            <div class="spark-text"><b>최근 흐름 해석:</b> {spark_k_txt}</div>
+          </div>
+
+          <div class="kpis">
+            <div class="kpi"><div class="k">수급 강도</div><div class="v">{float(last_k["수급 강도"]):.1f}%</div></div>
+            <div class="kpi"><div class="k">추세 강도</div><div class="v">{float(last_k["추세 강도"]):.1f}%</div></div>
+            <div class="kpi"><div class="k">외부 환경 영향</div><div class="v">{float(last_k["외부 환경 영향"]):.1f}%</div></div>
+            <div class="kpi"><div class="k">시장 건강도</div><div class="v">{float(last_k["시장 건강도"]):.1f}%</div></div>
+          </div>
+
+          <div class="guide"><b>대응 가이드:</b> {guide_k}</div>
+        </div>
+
+        <div class="card market-card" style="background:{bg_q};">
+          <div class="market-header">
+            <div>
+              <div class="market-name">KOSDAQ</div>
+              <div class="pill"><span class="dot"></span>Composite 구간: {band_q}</div>
+            </div>
+            <div class="comp-value">{("—" if pd.isna(cq) else f"{cq:.1f}")}</div>
+          </div>
+
+          <div class="spark-row">
+            {"<img src='data:image/png;base64," + spark_q + "'>" if spark_q else ""}
+            <div class="spark-text"><b>최근 흐름 해석:</b> {spark_q_txt}</div>
+          </div>
+
+          <div class="kpis">
+            <div class="kpi"><div class="k">수급 강도</div><div class="v">{float(last_q["수급 강도"]):.1f}%</div></div>
+            <div class="kpi"><div class="k">추세 강도</div><div class="v">{float(last_q["추세 강도"]):.1f}%</div></div>
+            <div class="kpi"><div class="k">외부 환경 영향</div><div class="v">{float(last_q["외부 환경 영향"]):.1f}%</div></div>
+            <div class="kpi"><div class="k">시장 건강도</div><div class="v">{float(last_q["시장 건강도"]):.1f}%</div></div>
+          </div>
+
+          <div class="guide"><b>대응 가이드:</b> {guide_q}</div>
+        </div>
+
+        {composite_legend_html}
+
+        <div class="card">
+          <div class="card-title">최근 15일 KOSPI 지표 흐름</div>
+          {t1}
+          <div class="note">지표는 거래일 기준이며, 휴일/주말 데이터 결측은 자동 보정 처리됩니다.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">최근 15일 KOSDAQ 지표 흐름</div>
+          {t2}
+          <div class="note">지표는 거래일 기준이며, 휴일/주말 데이터 결측은 자동 보정 처리됩니다.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">이 리포트가 계산되는 방식</div>
+          <div style="font-size:15px; line-height:1.9; color:#111827;">
+            <ul style="margin:0; padding-left:18px;">
+              <li><b>수급 강도</b>: 대표 ETF의 가격·거래량 기반 Flow Proxy로 매수/매도 힘을 수치화합니다.</li>
+              <li><b>추세 강도</b>: 지수의 단기/중기 이동평균 대비 괴리를 조합해 추세의 힘을 반영합니다.</li>
+              <li><b>외부 환경 영향</b>: 환율(20일 변화)과 미국 10년물 금리(20일 변화)를 반영합니다.</li>
+              <li><b>시장 건강도</b>: 최근 60일 범위 내 위치와 20일선 괴리를 조합합니다.</li>
+              <li><b>Composite</b>: 위 4개 지수를 시장 특성에 맞게 가중 평균한 "시장 컨디션 지표"입니다.</li>
+            </ul>
+          </div>
+          <div class="note">
+            ※ 본 자료는 교육/정보 제공 목적이며, 투자 손익은 본인 책임입니다.
+          </div>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+    return html
+
+def generate_market_summary_report():
+    """
+    Market Summary v10.8 리포트 생성
+    
+    Returns:
+        ReportData: HTML 콘텐츠와 메타데이터를 담은 객체
+        None: 생성 실패 시
+    """
+    try:
+        print("[INFO] Market Summary v10.8 리포트 생성 시작...")
+
+        # 1) KOSPI 데이터 로딩
+        df_k_idx = _ms_load_index("^KS200")
+        df_k_flow = _ms_load_etf_flow(ETF_KOSPI_MS)
+        
+        if df_k_idx is None or df_k_flow is None:
+            raise ValueError("KOSPI 데이터 로딩 실패")
+        
+        df_k = df_k_idx.join(df_k_flow, how="inner")
+
+        # 2) KOSDAQ 데이터 로딩
+        df_q_idx = _ms_load_index("^KQ11")
+        df_q_flow = _ms_load_etf_flow(ETF_KOSDAQ_MS)
+        
+        if df_q_idx is None or df_q_flow is None:
+            raise ValueError("KOSDAQ 데이터 로딩 실패")
+        
+        df_q = df_q_idx.join(df_q_flow, how="inner")
+
+        # 3) 매크로 데이터 로딩 (실패해도 진행)
+        df_macro = _ms_load_macro()
+        if df_macro is not None:
+            df_k = df_k.join(df_macro, how="left")
+            df_q = df_q.join(df_macro, how="left")
+
+        # 4) 점수 계산
+        df_k = _ms_compute_scores(df_k, trend_s=20, trend_l=60, ws=0.5, wl=0.5, name="KOSPI")
+        df_q = _ms_compute_scores(df_q, trend_s=10, trend_l=30, ws=0.6, wl=0.4, name="KOSDAQ")
+
+        # 5) HTML 생성
+        html_content = _ms_build_html(df_k, df_q)
+
+        # 6) 메타데이터 생성
+        # 6) 메타데이터 생성
+        trade_date = datetime.now(TZ).strftime("%Y%m%d")
+        
+        last_k = df_k.iloc[-1]
+        last_q = df_q.iloc[-1]
+        
+        ck = float(last_k["Composite"]) if pd.notna(last_k["Composite"]) else None
+        cq = float(last_q["Composite"]) if pd.notna(last_q["Composite"]) else None
+        
+        metadata = {
+            "report_type": "market_summary",
+            "kospi_composite": ck,
+            "kosdaq_composite": cq,
+            "kospi_band": _ms_composite_band(ck),
+            "kosdaq_band": _ms_composite_band(cq),
+            "generated_at": now_kr_str(),
+            "filename": f"Market_Summary_v10_8_{trade_date}.html"
+        }
+
+        # 🔧 수정된 출력 부분 (오류 해결)
+        ck_str = f"{ck:.1f}" if ck is not None else "N/A"
+        cq_str = f"{cq:.1f}" if cq is not None else "N/A"
+
+        print(f"[INFO] Market Summary 리포트 생성 완료")
+        print(f"       KOSPI Composite: {ck_str} ({metadata['kospi_band']})")
+        print(f"       KOSDAQ Composite: {cq_str} ({metadata['kosdaq_band']})")
+
+        return ReportData(html_content, trade_date, metadata)
+
+    except Exception as e:
+        print(f"[ERROR] Market Summary 리포트 생성 실패: {e}")
+        traceback.print_exc()
+        return None
+# ===== Market Supply Report 전용 함수들 =====
+
+# 상수 정의
+SUPPLY_FLOW_WINDOW_DAYS = 7
+SUPPLY_LIST_MIN_MCAP = 300_000_000_000
+SUPPLY_MIN_MCAP = 100_000_000_000
+SUPPLY_MIN_TV = 50_000_000_000
+SUPPLY_MIN_TURNOVER = 1.0
+SUPPLY_PREMIUM_MAX_R3 = 10.0
+SUPPLY_FAST_MIN_RETURN_1D = 10.0
+SUPPLY_FAST_MIN_FLOW1D_TV = 3.0
+SUPPLY_OVERHEAT_3D = 20.0
+SUPPLY_OVERHEAT_5D = 30.0
+SUPPLY_INTEREST_MIN_FLOW_3D_MCAP = 0.3
+SUPPLY_INTEREST_MAX_RISE_3D = 10.0
+SUPPLY_TOP_PER_SECTION = 30
+
+def _supply_to_number(x):
+    """숫자 변환 헬퍼"""
+    if isinstance(x, (int, float)):
+        return float(x)
+    try:
+        s = str(x).strip()
+        if s in ("", "-", "None", "nan"):
+            return 0.0
+        return float(s.replace(",", ""))
+    except Exception:
+        return 0.0
+
+def _supply_pick_col(df, names):
+    """컬럼 선택 헬퍼"""
+    for c in names:
+        if c in df.columns:
+            return c
+    raise KeyError(f"필요 컬럼을 찾지 못했습니다: {names}")
+
+def _supply_get_recent_trading_dates(last_date_str, n_days):
+    """최근 N개 거래일 목록 조회"""
+    last_dt = datetime.strptime(last_date_str, "%Y%m%d")
+    days = []
+    d = last_dt
+    while len(days) < n_days:
+        if d.weekday() < 5:  # 평일만
+            ds = d.strftime("%Y%m%d")
+            try:
+                # 실제 거래일인지 확인 (삼성전자로 테스트)
+                if not stock.get_market_ohlcv_by_date(ds, ds, "005930").empty:
+                    days.append(ds)
+            except Exception:
+                pass
+        d -= timedelta(days=1)
+    return sorted(days)
+
+def _supply_safe_return(closes, days):
+    """안전한 수익률 계산"""
+    if len(closes) <= days:
+        return 0.0
+    try:
+        base = closes.iloc[-(days + 1)]
+        last = closes.iloc[-1]
+        if base == 0 or pd.isna(base) or pd.isna(last):
+            return 0.0
+        return (last / base - 1.0) * 100.0
+    except Exception:
+        return 0.0
+
+class _SupplyKrxJson:
+    """KRX JSON API 래퍼 (Market Supply 전용)"""
+    
+    URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+
+    def __init__(self):
+        self.s = requests.Session()
+        self.s.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://data.krx.co.kr"
+        })
+
+    def get_all(self, date):
+        """전체 종목 데이터 조회"""
+        payload = {
+            "bld": "dbms/MDC/STAT/standard/MDCSTAT01501",
+            "mktId": "ALL",
+            "trdDd": date,
+            "share": "1",
+            "money": "1"
+        }
+        
+        try:
+            r = self.s.post(self.URL, data=payload, timeout=25)
+            r.raise_for_status()
+            j = r.json()
+            rows = j.get("OutBlock_1", j.get("output", []))
+            df = pd.DataFrame(rows)
+            
+            if df.empty:
+                return df
+
+            # 필수 컬럼 확인 및 매핑
+            code = _supply_pick_col(df, ["ISU_SRT_CD"])
+            name = _supply_pick_col(df, ["ISU_ABBRV"])
+            mkt = _supply_pick_col(df, ["MKT_NM"])
+            close = _supply_pick_col(df, ["TDD_CLSPRC"])
+            tv = _supply_pick_col(df, ["ACC_TRDVAL"])
+            mcap = _supply_pick_col(df, ["MKTCAP"])
+            fluc = _supply_pick_col(df, ["FLUC_RT"])
+
+            out = pd.DataFrame({
+                "티커": df[code].astype(str),
+                "종목명": df[name].astype(str),
+                "시장": df[mkt].astype(str),
+                "종가": df[close].map(_supply_to_number),
+                "거래대금": df[tv].map(_supply_to_number),
+                "시가총액": df[mcap].map(_supply_to_number),
+                "등락률_당일(%)": df[fluc].map(_supply_to_number),
+            })
+
+            # ETF/ETN/스팩/우선주 제외
+            mask = (
+                out["종목명"].str.contains("ETF|ETN|스팩|SPAC", na=False) |
+                out["종목명"].str.endswith("우", na=False)
+            )
+            out = out[~mask].copy()
+
+            # 유효 데이터 필터링
+            out = out[(out["거래대금"] > 0) & (out["시가총액"] > 0)].reset_index(drop=True)
+            out["시총대비_거래대금(%)"] = out["거래대금"] / out["시가총액"] * 100.0
+            
+            return out
+            
+        except Exception as e:
+            print(f"[ERROR] KRX API 호출 실패: {e}")
+            return pd.DataFrame()
+
+def _supply_fetch_detail(row, trade_dates, calendar, fdr_start, fdr_end):
+    """개별 종목 상세 분석"""
+    t = row["티커"]
+
+    try:
+        # FinanceDataReader로 가격 데이터 조회
+        price_all = fdr.DataReader(t, fdr_start, fdr_end)
+    except Exception as e:
+        print(f"[WARNING] FDR 조회 실패 {t}: {e}")
+        return None
+
+    if price_all is None or price_all.empty or "Close" not in price_all.columns:
+        return None
+
+    # 캘린더 기간으로 슬라이싱
+    price_slice = price_all.loc[calendar.min(): calendar.max()]
+    price_win = price_slice.reindex(calendar)
+    closes = price_win["Close"]
+
+    if closes.notna().sum() < 6:
+        return None
+
+    closes = closes.ffill()
+    if closes.isna().any():
+        return None
+
+    # 기관/외국인 순매수 데이터 (pykrx 사용)
+    try:
+        vol_raw = stock.get_market_trading_volume_by_date(
+            trade_dates[0], trade_dates[-1], t
+        )
+    except Exception:
+        vol_raw = pd.DataFrame()
+
+    if vol_raw.empty:
+        inst = pd.Series([0.0] * len(calendar), index=calendar)
+        fore = pd.Series([0.0] * len(calendar), index=calendar)
+    else:
+        vol = vol_raw.reindex(calendar).fillna(0.0)
+        if "기관합계" not in vol.columns or "외국인합계" not in vol.columns:
+            return None
+        inst = vol["기관합계"]
+        fore = vol["외국인합계"]
+
+    # Flow 계산 (순매수 * 주가)
+    flows = (inst + fore) * closes
+
+    tot_1 = float(flows.iloc[-1])
+    tot_3 = float(flows.iloc[-3:].sum())
+    tot_5 = float(flows.iloc[-5:].sum())
+
+    mcap = float(row["시가총액"])
+    tv = float(row["거래대금"])
+
+    # 비율 계산
+    pct1_mcap = (tot_1 / mcap * 100.0) if mcap else 0.0
+    pct3_mcap = (tot_3 / mcap * 100.0) if mcap else 0.0
+    pct5_mcap = (tot_5 / mcap * 100.0) if mcap else 0.0
+    pct1_tv = (tot_1 / tv * 100.0) if tv else 0.0
+
+    r3 = _supply_safe_return(closes, 3)
+    r5 = _supply_safe_return(closes, 5)
+
+    # 프리미엄 플래그 (최근 3일 연속 순매수)
+    last3 = flows.iloc[-3:]
+    premium_flag = bool((last3 > 0).all())
+
+    # 선취매 강도 점수 계산 (0~100)
+    strength_raw = (
+        pct3_mcap * 40.0 +
+        pct1_mcap * 30.0 +
+        pct5_mcap * 20.0 +
+        (10.0 if premium_flag else 0.0)
+    )
+    strength = round(min(max(strength_raw, 0.0), 100.0), 2)
+
+    return {
+        "티커": t,
+        "원본종목명": row["종목명"],
+        "종목명": row["종목명"],
+        "종가(원)": f"{int(row['종가']):,}",
+        "등락률_당일(%)": round(float(row["등락률_당일(%)"]), 2),
+        "시가총액(억)": round(mcap / 1e8, 1),
+        "거래대금(억)": round(tv / 1e8, 1),
+        "시총대비_거래대금(%)": round(float(row["시총대비_거래대금(%)"]), 2),
+        "3일수익률(%)": round(r3, 2),
+        "5일수익률(%)": round(r5, 2),
+        "합산_1일(억)": round(tot_1 / 1e8, 2),
+        "합산_3일(억)": round(tot_3 / 1e8, 2),
+        "합산_5일(억)": round(tot_5 / 1e8, 2),
+        "1일_순매수/거래대금(%)": round(pct1_tv, 2),
+        "3일_순매수/시총(%)": round(pct3_mcap, 3),
+        "5일_순매수/시총(%)": round(pct5_mcap, 3),
+        "선취매강도점수": strength,
+        "_flag_premium": premium_flag,
+        "_mcap": mcap
+    }
+
+def _supply_style_name(name, score):
+    """종목명 스타일링 (선취매 강도 100점만 빨강)"""
+    if round(score, 2) >= 100.0:
+        return f"<span class='name red'>{name}</span>"
+    return f"<span class='name'>{name}</span>"
+
+def _supply_render_table(df):
+    """테이블 HTML 렌더링"""
+    if df.empty:
+        return "<div class='empty'>조건에 맞는 종목이 없습니다.</div>"
+
+    show = df.head(SUPPLY_TOP_PER_SECTION).copy()
+    show["종목명"] = show.apply(
+        lambda r: _supply_style_name(r["원본종목명"], float(r["선취매강도점수"])), axis=1
+    )
+
+    cols = [
+        "종목명", "종가(원)", "등락률_당일(%)", "3일수익률(%)", "5일수익률(%)",
+        "시가총액(억)", "거래대금(억)", "시총대비_거래대금(%)",
+        "합산_1일(억)", "합산_3일(억)", "합산_5일(억)",
+        "1일_순매수/거래대금(%)", "3일_순매수/시총(%)", "5일_순매수/시총(%)",
+        "선취매강도점수",
+    ]
+    show = show[cols].copy()
+
+    # 모바일에서 숨길 컬럼
+    mobile_hide_cols = {"합산_5일(억)", "5일_순매수/시총(%)", "3일_순매수/시총(%)"}
+
+    # 테이블 헤더
+    ths = []
+    for c in show.columns:
+        cls = "m-hide" if c in mobile_hide_cols else ""
+        ths.append(f"<th class='{cls}'>{c}</th>")
+
+    # 테이블 본문
+    trs = []
+    for _, row in show.iterrows():
+        tds = []
+        for c in show.columns:
+            cls = "m-hide" if c in mobile_hide_cols else ""
+            tds.append(f"<td class='{cls}'>{row[c]}</td>")
+        trs.append("<tr>" + "".join(tds) + "</tr>")
+
+    return f"""
+    <div class="table-wrap">
+      <table>
+        <thead><tr>{''.join(ths)}</tr></thead>
+        <tbody>{''.join(trs)}</tbody>
+      </table>
+    </div>
+    """
+
+def _supply_build_html(trade_date, premium, fast, overheat, interest):
+    """Market Supply Report HTML 생성 (파일 저장 없이 문자열만 반환)"""
+    
+    date_fmt = datetime.strptime(trade_date, "%Y%m%d").strftime("%Y-%m-%d (%A)")
+    
+    warning_text = """
+    ※ 이 종목은 데이터에 기반한 통계적인 추천일 뿐이며 100% 확실한 보장이 아닙니다.<br>
+    시장 전체의 갑작스러운 급변이나 개별 종목의 악재 뉴스로 인한 갑작스러운 변동이 있을 수 있으니,
+    투자 결정은 반드시 본인의 판단 하에 신중하게 진행하시기 바랍니다.
+    """
+
+    # 요약 카드 생성
+    def best_row(df):
+        return None if df.empty else df.iloc[0]
+
+    b_p = best_row(premium)
+    b_f = best_row(fast)
+    b_i = best_row(interest)
+
+    summary_lines = []
+    if b_p is not None:
+        summary_lines.append(
+            f"• 프리미엄 1순위: <b>{b_p['원본종목명']}</b> (선취매 {b_p['선취매강도점수']}점) — 3일 연속 매수 + 3일 수익률 제한 구간"
+        )
+    if b_f is not None:
+        summary_lines.append(
+            f"• Fast(스윙): <b>{b_f['원본종목명']}</b> — 당일 모멘텀 강함, 분할 매매 권장"
+        )
+    if b_i is not None:
+        summary_lines.append(
+            f"• 중장기 관심: <b>{b_i['원본종목명']}</b> — 관심 편입 후 분할 관찰"
+        )
+    if not summary_lines:
+        summary_lines.append("• 오늘은 강한 후보가 제한적입니다. 지수/변동성 확인 후 보수적으로 접근하세요.")
+
+    summary_html = f"""
+    <div class="card summary">
+      <div class="summary-title">요약 전략 코멘트</div>
+      <div class="summary-body">{'<br>'.join(summary_lines)}</div>
+    </div>
+    """
+
+    # 섹션별 설명
+    premium_desc = f"""
+    <div class="desc">
+      • '프리미엄 추천 종목'은 최근 <b>3거래일 연속</b> 기관+외국인 순매수이며,
+        <b>3일 수익률이 {SUPPLY_PREMIUM_MAX_R3}% 이하</b>인 종목입니다.<br>
+      • "수급은 들어오지만 가격은 아직 덜 오른" 후보를 우선적으로 포착합니다.
+    </div>
+    """
+    
+    fast_desc = """
+    <div class="desc">
+      • Fast(스윙)은 당일 강한 모멘텀과 수급이 함께 나타난 종목입니다.<br>
+      • 분할 진입·분할 매도로 변동성을 관리하는 접근이 안정적입니다.
+    </div>
+    """
+    
+    overheat_desc = """
+    <div class="desc">
+      • 과열 구간은 최근 3~5거래일 급등한 종목입니다.<br>
+      • 신규 진입보다 차익실현/관망 관점이 우선입니다.
+    </div>
+    """
+    
+    interest_desc = """
+    <div class="desc">
+      • 중장기 관심 종목은 수급 대비 주가 상승이 제한적인 후보입니다.<br>
+      • 관심 편입 후 눌림/조정 구간에서 분할 접근을 고려할 수 있습니다.
+    </div>
+    """
+
+    # 선취매 강도 설명
+    strength_explain = f"""
+    <div class="card legend">
+      <div class="legend-title">선취매 강도 점수 계산 및 해석</div>
+      <div class="legend-body">
+        <b>계산 공식 (0~100점)</b><br>
+        • 3일 순매수/시총(%) × 40<br>
+        • 1일 순매수/시총(%) × 30<br>
+        • 5일 순매수/시총(%) × 20<br>
+        • 최근 3거래일 연속 순매수이면 +10점<br><br>
+
+        <b>해석</b><br>
+        • "기관·외국인이 시가총액 대비 얼마나 강하게, 그리고 연속으로 담는가"를 0~100점으로 단순화한 지표입니다.<br>
+        • 점수가 높을수록 '매집 강도'가 높다고 해석할 수 있으나, 급변 시장/악재 등으로 결과가 달라질 수 있습니다.<br><br>
+
+        <b>표시 규칙</b><br>
+        • 본 리포트에서는 선취매 강도 점수가 <b>100점인 종목만</b> 종목명을 붉게 표시합니다.
+      </div>
+    </div>
+    """
+
+    # 스타일 (모바일 최적화)
+    style = """
+    <style>
+      :root{
+        --bg:#ffffff; --ink:#0b0b0b; --muted:#4b4b4b; --line:#111111;
+        --line-soft:#d7d7d7; --card:#fafafa; --red:#b30000;
+      }
+      *{box-sizing:border-box}
+      body{
+        margin:0; background:var(--bg); color:var(--ink);
+        font-family: "Pretendard","Segoe UI",system-ui,-apple-system,"Malgun Gothic",sans-serif;
+      }
+      .wrap{max-width:1200px; margin:0 auto; padding:24px 14px 60px;}
+      .header{
+        display:flex; justify-content:space-between; align-items:flex-end;
+        border-bottom:2px solid var(--line); padding-bottom:12px; gap:12px; flex-wrap:wrap;
+      }
+      .header h1{margin:0; font-size:28px; letter-spacing:-0.02em;}
+      .header .date{color:var(--muted); font-size:14px; margin-top:6px;}
+      .badge{
+        font-size:12px; padding:7px 12px; border:1px solid var(--line);
+        border-radius:999px; background:#fff; color:var(--ink);
+        letter-spacing:0.08em; text-transform:uppercase;
+      }
+      .warn{
+        margin-top:14px; padding:14px 14px; border:1px solid var(--line-soft); background:#fff;
+        border-radius:14px; color:var(--muted); font-size:14px; line-height:1.65;
+      }
+      .card{
+        margin-top:16px; padding:16px 16px; border:1px solid var(--line-soft);
+        border-radius:16px; background:var(--card);
+      }
+      .summary-title{font-weight:900; font-size:16px; margin-bottom:10px;}
+      .summary-body{font-size:14px; color:var(--muted); line-height:1.75;}
+      .section{margin-top:26px;}
+      .section h2{
+        margin:0; font-size:20px; padding-bottom:10px; border-bottom:2px solid var(--line);
+        display:flex; align-items:baseline; justify-content:space-between; gap:10px; flex-wrap:wrap;
+      }
+      .pill{
+        font-size:12px; border:1px solid var(--line-soft); background:#fff;
+        padding:6px 10px; border-radius:999px; color:var(--muted); white-space:nowrap;
+      }
+      .desc{margin-top:12px; color:var(--muted); font-size:14px; line-height:1.75;}
+      .table-wrap{
+        margin-top:14px; overflow-x:auto; -webkit-overflow-scrolling:touch;
+        border:1px solid var(--line); border-radius:14px; background:#fff;
+      }
+      table{width:100%; border-collapse:collapse; min-width:980px; font-size:14px;}
+      th{
+        background:#000; color:#fff; padding:12px 10px; border-bottom:1px solid #000;
+        position:sticky; top:0; white-space:nowrap;
+      }
+      td{
+        padding:12px 10px; border-bottom:1px solid var(--line-soft);
+        text-align:center; white-space:nowrap;
+      }
+      tr:nth-child(even) td{background:#fbfbfb;}
+      tr:hover td{background:#f2f2f2;}
+      .empty{margin-top:12px; padding:10px 2px; font-size:14px; color:var(--muted);}
+      .name{font-weight:700; color:var(--ink); font-size:inherit;}
+      .name.red{color:var(--red); font-weight:800;}
+      .legend-title{font-weight:900; font-size:16px; margin-bottom:10px;}
+      .legend-body{font-size:14px; color:var(--muted); line-height:1.75;}
+      @media (max-width: 640px){
+        .wrap{padding:18px 12px 60px;}
+        .header h1{font-size:24px;}
+        .badge{font-size:11px;}
+        .warn{font-size:13px;}
+        .summary-body{font-size:13px;}
+        .desc{font-size:13px;}
+        table{min-width:820px; font-size:13px;}
+        th,td{padding:10px 8px;}
+        .m-hide{display:none;}
+      }
+    </style>
+    """
+
+    html = f"""
+    <!doctype html>
+    <html lang="ko">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      {style}
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="header">
+          <div>
+            <h1>기관·외국인 수급 리포트 Rev9.1</h1>
+            <div class="date">기준일: {date_fmt}</div>
+          </div>
+          <div class="badge">MOBILE FRIENDLY</div>
+        </div>
+
+        <div class="warn">{warning_text}</div>
+
+        {summary_html}
+
+        <div class="section">
+          <h2>
+            <span>프리미엄 추천 종목 (선취매 기반)</span>
+            <span class="pill">정렬: 선취매 강도 내림차순</span>
+          </h2>
+          {premium_desc}
+          {_supply_render_table(premium)}
+        </div>
+
+        <div class="section">
+          <h2>
+            <span>Fast 종목 (스윙 관점)</span>
+            <span class="pill">정렬: 선취매 강도 내림차순</span>
+          </h2>
+          {fast_desc}
+          {_supply_render_table(fast)}
+        </div>
+
+        <div class="section">
+          <h2>
+            <span>과열 종목 (단타 위험 구간)</span>
+            <span class="pill">정렬: 선취매 강도 내림차순</span>
+          </h2>
+          {overheat_desc}
+          {_supply_render_table(overheat)}
+        </div>
+
+        <div class="section">
+          <h2>
+            <span>중장기 관심 종목</span>
+            <span class="pill">정렬: 선취매 강도 내림차순</span>
+          </h2>
+          {interest_desc}
+          {_supply_render_table(interest)}
+        </div>
+
+        {strength_explain}
+
+      </div>
+    </body>
+    </html>
+    """
+    return html
+
+def generate_market_supply_report():
+    """
+    Market Supply (수급) 리포트 생성
+    
+    Returns:
+        ReportData: HTML 콘텐츠와 메타데이터를 담은 객체
+        None: 생성 실패 시
+    """
+    try:
+        print("[INFO] Market Supply 리포트 생성 시작...")
+
+        # 1. 거래일 설정
+        trade_date = get_trade_date()  # 기존 공통 함수 사용
+        trade_dates = _supply_get_recent_trading_dates(trade_date, SUPPLY_FLOW_WINDOW_DAYS)
+        calendar = pd.to_datetime(trade_dates)
+
+        fdr_start_dt = calendar[0] - pd.Timedelta(days=7)
+        fdr_start = fdr_start_dt.strftime("%Y-%m-%d")
+        fdr_end = calendar[-1].strftime("%Y-%m-%d")
+
+        print(f"[Supply] 기준일: {trade_date}")
+        print(f"[Supply] 분석 기간: {trade_dates[0]} ~ {trade_dates[-1]}")
+
+        # 2. KRX API로 기본 종목 목록 로딩
+        krx = _SupplyKrxJson()
+        base = krx.get_all(trade_date)
+        
+        if base.empty:
+            print("[INFO] Supply: KRX 데이터 조회 실패 또는 데이터 없음")
+            return None
+
+        # 기본 필터 적용
+        cond = (
+            (base["시가총액"] >= SUPPLY_MIN_MCAP) &
+            (base["거래대금"] >= SUPPLY_MIN_TV) &
+            (base["시총대비_거래대금(%)"] >= SUPPLY_MIN_TURNOVER)
+        )
+        base = base[cond].copy()
+        print(f"[Supply] 1차 필터 통과 종목 수: {len(base)}")
+
+        if base.empty:
+            print("[INFO] Supply: 기본 조건을 만족하는 종목이 없습니다.")
+            return None
+
+        # 3. 상세 분석
+        rows = []
+        for _, r in tqdm(base.iterrows(), total=len(base), desc="[Supply] 상세 분석"):
+            x = _supply_fetch_detail(r, trade_dates, calendar, fdr_start, fdr_end)
+            if x:
+                rows.append(x)
+
+        if not rows:
+            print("[INFO] Supply: 상세 분석 결과가 없습니다.")
+            return None
+
+        df = pd.DataFrame(rows)
+        print(f"[Supply] 상세 계산 완료 종목 수: {len(df)}")
+
+        # 4. 리스트 표시 최소 시총 필터
+        df = df[df["_mcap"] >= SUPPLY_LIST_MIN_MCAP].copy()
+
+        # 5. 4개 섹션 분류
+        premium = df[
+            (df["_flag_premium"] == True) & 
+            (df["3일수익률(%)"] <= SUPPLY_PREMIUM_MAX_R3)
+        ].copy()
+        
+        fast = df[
+            (df["등락률_당일(%)"] >= SUPPLY_FAST_MIN_RETURN_1D) &
+            (df["1일_순매수/거래대금(%)"] >= SUPPLY_FAST_MIN_FLOW1D_TV) &
+            (df["3일수익률(%)"] < SUPPLY_OVERHEAT_3D)
+        ].copy()
+        
+        overheat = df[
+            (df["3일수익률(%)"] >= SUPPLY_OVERHEAT_3D) | 
+            (df["5일수익률(%)"] >= SUPPLY_OVERHEAT_5D)
+        ].copy()
+        
+        interest = df[
+            (df["3일_순매수/시총(%)"] >= SUPPLY_INTEREST_MIN_FLOW_3D_MCAP) &
+            (df["3일수익률(%)"] <= SUPPLY_INTEREST_MAX_RISE_3D)
+        ].copy()
+        # 프리미엄과 중복 제거
+        interest = interest[~interest["티커"].isin(premium["티커"])].copy()
+
+        # 6. 선취매 강도 점수 순 정렬
+        for t in [premium, fast, overheat, interest]:
+            if not t.empty:
+                t.sort_values("선취매강도점수", ascending=False, inplace=True)
+
+        # 7. HTML 생성
+        html_content = _supply_build_html(trade_date, premium, fast, overheat, interest)
+
+        # 8. 메타데이터 생성
+        metadata = {
+            "report_type": "market_supply",
+            "premium_count": len(premium),
+            "fast_count": len(fast),
+            "overheat_count": len(overheat),
+            "interest_count": len(interest),
+            "total_analyzed": len(df),
+            "generated_at": now_kr_str(),
+            "filename": f"Market_Supply_Rev9_1_{trade_date}.html"
+        }
+
+        print(f"[INFO] Market Supply 리포트 생성 완료")
+        print(f"       프리미엄: {len(premium)}, Fast: {len(fast)}, 과열: {len(overheat)}, 관심: {len(interest)}")
+
+        return ReportData(html_content, trade_date, metadata)
+
+    except Exception as e:
+        print(f"[ERROR] Market Supply 리포트 생성 실패: {e}")
+        traceback.print_exc()
+        return None
+    
 
 # ===== 테스트용 메인 함수 =====
 
