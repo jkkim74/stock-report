@@ -459,19 +459,39 @@ class TelegramNotifier(BaseNotifier):
             return {"success": False, "message": f"Telegram 발송 오류: {str(e)}", "url": ""}
     
     def _send_preview_message(self, bot_token, chat_id, report_data):
-        """간단한 미리보기 메시지 전송"""
+        """간단한 미리보기 메시지 전송 (정렬 문제 해결)"""
         try:
-            message = f"""🚀 <b>AI 기반 프리미엄 추천 종목 리포트 v4</b>
-
-📅 <b>기준일:</b> {report_data.trade_date}
-⏰ <b>생성시간:</b> {report_data.metadata.get('generated_at', 'N/A')}
-
-📊 <b>분석 결과:</b>
-  🔥 추천주: {report_data.metadata.get('recommend_count', 0)}종목
-  ⭐ 프리미엄: {report_data.metadata.get('premium_count', 0)}종목  
-  👀 관심: {report_data.metadata.get('watch_count', 0)}종목
-
-📎 상세 리포트 파일을 전송합니다..."""
+            # 리포트 타입별 메시지 생성
+            if report_data.metadata.get('report_type') == 'premium_stock':
+                message = (
+                    f"🚀 <b>AI 기반 프리미엄 추천 종목 리포트 v4</b>\n\n"
+                    f"📅 <b>기준일:</b> {report_data.trade_date}\n\n"
+                    f"📊 <b>분석 결과:</b>\n"
+                    f"🔥 추천주: {report_data.metadata.get('recommend_count', 0)}종목\n"
+                    f"⭐ 프리미엄: {report_data.metadata.get('premium_count', 0)}종목\n"
+                    f"👀 관심: {report_data.metadata.get('watch_count', 0)}종목\n\n"
+                    f"📎 상세 리포트 파일을 전송합니다..."
+                )
+                
+            elif report_data.metadata.get('report_type') == 'gap_updown_risk':
+                kospi_scores = report_data.metadata.get('kospi_scores', {})
+                kosdaq_scores = report_data.metadata.get('kosdaq_scores', {})
+                
+                message = (
+                    f"🚀 <b>AI 기반 UP&Down Risk 리포트 v4</b>\n\n"
+                    f"📅 <b>기준일:</b> {report_data.trade_date}\n\n"
+                    f"📊 <b>리스크 분석:</b>\n"
+                    f"📈 KOSPI: 급등 {kospi_scores.get('up', 0)}/급락 {kospi_scores.get('down', 0)}\n"
+                    f"📉 KOSDAQ: 급등 {kosdaq_scores.get('up', 0)}/급락 {kosdaq_scores.get('down', 0)}\n\n"
+                    f"📎 상세 리포트 파일을 전송합니다..."
+                )
+            else:
+                # 기본 메시지 (새로운 리포트 타입 대응)
+                message = (
+                    f"🚀 <b>AI 리포트</b>\n\n"
+                    f"📅 <b>기준일:</b> {report_data.trade_date}\n\n"
+                    f"📎 상세 리포트 파일을 전송합니다..."
+                )
 
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
             payload = {
@@ -493,6 +513,7 @@ class TelegramNotifier(BaseNotifier):
                 
         except Exception as e:
             return {"success": False, "message": f"미리보기 오류: {str(e)}"}
+
     
     def _send_html_file(self, bot_token, chat_id, report_data):
         """HTML 파일을 Telegram 문서로 전송"""
@@ -521,18 +542,11 @@ class TelegramNotifier(BaseNotifier):
             # Telegram API로 문서 전송
             url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
             
-            caption = f"""📊 <b>AI 프리미엄 리포트</b> ({report_data.trade_date})
-
-🎯 <b>분석 기준:</b> 시가총액≥3000억, 등락률≥5%, 거래대금≥1000억
-
-💡 다운로드 후 브라우저에서 열어보세요!
-⚠️ 투자 판단은 본인 책임입니다."""
-            
             with open(temp_file, 'rb') as f:
                 files = {'document': (report_data.metadata["filename"], f, 'text/html')}
                 data = {
                     'chat_id': chat_id,
-                    'caption': caption,
+                    'caption': '',
                     'parse_mode': 'HTML'
                 }
                 
@@ -559,24 +573,17 @@ class TelegramNotifier(BaseNotifier):
     def _send_detailed_summary(self, bot_token, chat_id, report_data):
         """파일 대신 상세 텍스트 요약 전송"""
         try:
-            message = f"""📊 <b>AI 기반 프리미엄 추천 종목 리포트 v4</b>
-
-📅 <b>기준일:</b> {report_data.trade_date}
-⏰ <b>생성시간:</b> {report_data.metadata.get('generated_at', 'N/A')}
-
-🎯 <b>분석 기준:</b>
-  • 시가총액 ≥ 3000억
-  • 등락률 ≥ 5%  
-  • 거래대금 ≥ 1000억
-
-📊 <b>분석 결과:</b>
-  🔥 추천주: {report_data.metadata.get('recommend_count', 0)}종목
-  ⭐ 프리미엄: {report_data.metadata.get('premium_count', 0)}종목
-  👀 관심: {report_data.metadata.get('watch_count', 0)}종목
-  📈 전체: {report_data.metadata.get('total_stocks', 0)}종목
-
-⚠️ <b>투자 유의사항:</b>
-데이터 기반 통계적 추천이므로 신중한 판단하에 투자하시기 바랍니다."""
+            message = (
+                f"📊 <b>AI 기반 프리미엄 추천 종목 리포트 v4</b>\n\n"
+                f"📅 <b>기준일:</b> {report_data.trade_date}\n\n"
+                f"📊 <b>분석 결과:</b>\n"
+                f"🔥 추천주: {report_data.metadata.get('recommend_count', 0)}종목\n"
+                f"⭐ 프리미엄: {report_data.metadata.get('premium_count', 0)}종목\n"
+                f"👀 관심: {report_data.metadata.get('watch_count', 0)}종목\n"
+                f"📈 전체: {report_data.metadata.get('total_stocks', 0)}종목\n\n"
+                f"⚠️ <b>투자 유의사항:</b>\n"
+                f"데이터 기반 통계적 추천이므로 신중한 판단하에 투자하시기 바랍니다."
+            )
 
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
             payload = {
@@ -596,6 +603,7 @@ class TelegramNotifier(BaseNotifier):
                 
         except Exception as e:
             return {"success": False, "message": f"상세 요약 오류: {str(e)}"}
+
 
 
 class TelegramChannelNotifier(BaseNotifier):
