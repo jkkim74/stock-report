@@ -359,7 +359,7 @@ tbody tr:hover {{ background: #eef2ff; }}
 <div class="container">
 <h1>AI 기반 프리미엄 추천 종목 리포트 v4</h1>
 <div class="subtitle">
-  기준일: {trade_date} · (시가총액 ≥ 3000억, 등락률 ≥ 5%, 거래대금 ≥ 1000억 종목만 분석합니다.)
+  기준일: {trade_date} · (시가총액 ≥ 5000억, 등락률 ≥ 5%, 거래대금 ≥ 1000억 종목만 분석합니다.)
 </div>
 <div class="warning-box">{warning_text}</div>
 """
