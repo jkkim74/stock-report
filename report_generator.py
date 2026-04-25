@@ -23,9 +23,22 @@ import datetime as dt
 import matplotlib
 matplotlib.use('Agg')  # 서버 환경에서 GUI 없이 차트 생성
 import matplotlib.pyplot as plt
-import yfinance as yf
 
-from pykrx import stock
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
+
+try:
+    from pykrx import stock
+except ImportError:
+    stock = None
+
+try:
+    import FinanceDataReader as fdr
+except ImportError:
+    fdr = None
+
 from tqdm import tqdm
 from pytz import timezone
 from config import ANALYSIS_CONFIG
@@ -37,13 +50,31 @@ from io import BytesIO
 
 import logging
 import requests
-import FinanceDataReader as fdr
 
 # Market Supply용 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+
+def _ensure_required_dependencies():
+    """리포트 생성에 필요한 외부 패키지 설치 여부 확인"""
+    missing = []
+
+    if stock is None:
+        missing.append("pykrx")
+    if yf is None:
+        missing.append("yfinance")
+    if fdr is None:
+        missing.append("finance-datareader")
+
+    if missing:
+        raise RuntimeError(
+            "필수 패키지가 설치되지 않았습니다: "
+            + ", ".join(missing)
+            + "\n해결: pip install -r requirements.txt"
+        )
 
 
 # Windows 콘솔 UTF-8 인코딩 설정
@@ -1094,6 +1125,7 @@ def generate_premium_stock_report():
         None: 생성 실패 시
     """
     try:
+        _ensure_required_dependencies()
         trade_date = get_trade_date()
         print(f"[INFO] Premium 기준일: {trade_date}")
 
@@ -1250,6 +1282,7 @@ def getUpAndDownReport():
         None: 생성 실패 시
     """
     try:
+        _ensure_required_dependencies()
         print("[INFO] Gap Up & Down Risk 리포트 생성 시작...")
 
         # 1. 신호 계산
@@ -1912,6 +1945,7 @@ def generate_market_summary_report():
         None: 생성 실패 시
     """
     try:
+        _ensure_required_dependencies()
         print("[INFO] Market Summary v10.8 리포트 생성 시작...")
 
         # 1) KOSPI 데이터 로딩
@@ -2509,6 +2543,7 @@ def generate_market_supply_report():
         None: 생성 실패 시
     """
     try:
+        _ensure_required_dependencies()
         print("[INFO] Market Supply 리포트 생성 시작...")
 
         # 1. 거래일 설정
