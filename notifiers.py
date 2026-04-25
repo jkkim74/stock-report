@@ -11,8 +11,6 @@ import subprocess
 import requests
 import json
 import webbrowser
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
 from config import GITHUB_CONFIG, SLACK_CONFIG, LOCAL_FILE_CONFIG
 
 
@@ -140,6 +138,10 @@ class GitHubPagesNotifier(BaseNotifier):
     
     def _send_slack_notification(self, report_data, web_url):
         """Slack 알림 전송"""
+        if not SLACK_CONFIG.get("webhook_url"):
+            print("[Slack] webhook_url 미설정 - 알림 전송 건너뜀")
+            return True
+
         payload = {
             "text": f"<!channel> 📊 AI 기반 프리미엄 추천 종목 리포트 v4 ({report_data.trade_date}) - 오늘의 리포트가 준비되었습니다!",
             "blocks": [
@@ -216,16 +218,35 @@ class SlackFileNotifier(BaseNotifier):
     
     def send(self, report_data):
         """Slack에 HTML 파일 직접 업로드"""
+        temp_file = None
+
+        if not SLACK_CONFIG.get("bot_token") or not SLACK_CONFIG.get("channel_id"):
+            return {
+                "success": False,
+                "message": "SLACK_BOT_TOKEN 또는 SLACK_CHANNEL_ID가 설정되지 않았습니다.",
+                "url": "",
+            }
+
+        try:
+            from slack_sdk import WebClient
+            from slack_sdk.errors import SlackApiError
+        except ImportError:
+            return {
+                "success": False,
+                "message": "slack-sdk 패키지가 설치되지 않았습니다. pip install -r requirements.txt",
+                "url": "",
+            }
+
         try:
             print("[Slack] 파일 업로드 시작...")
-            
+
             # 임시 파일 생성
             temp_file = f"temp_{report_data.metadata['filename']}"
             with open(temp_file, "w", encoding="utf-8") as f:
                 f.write(report_data.html_content)
-            
+
             client = WebClient(token=SLACK_CONFIG["bot_token"])
-            
+
             # 파일 업로드
             response = client.files_upload_v2(
                 channel=SLACK_CONFIG["channel_id"],
@@ -234,29 +255,29 @@ class SlackFileNotifier(BaseNotifier):
                 filename=report_data.metadata["filename"],
                 initial_comment=self._create_upload_message(report_data)
             )
-            
+
             # 임시 파일 삭제
             os.remove(temp_file)
-            
+
             file_url = response.get('files', [{}])[0].get('permalink', 'N/A')
             print(f"[Slack] 파일 업로드 완료: {file_url}")
-            
+
             return {
                 "success": True,
                 "message": "Slack 파일 업로드 완료",
                 "url": file_url
             }
-            
+
         except SlackApiError as e:
-            if os.path.exists(temp_file):
+            if temp_file and os.path.exists(temp_file):
                 os.remove(temp_file)
             error_code = e.response['error']
             print(f"[Slack] 업로드 실패: {error_code}")
             self._print_error_solution(error_code)
             return {"success": False, "message": f"Slack 업로드 실패: {error_code}", "url": ""}
-            
+
         except Exception as e:
-            if os.path.exists(temp_file):
+            if temp_file and os.path.exists(temp_file):
                 os.remove(temp_file)
             print(f"[Slack] 업로드 오류: {str(e)}")
             return {"success": False, "message": f"Slack 업로드 실패: {str(e)}", "url": ""}
