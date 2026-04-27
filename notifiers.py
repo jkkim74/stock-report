@@ -11,8 +11,15 @@ import subprocess
 import requests
 import json
 import webbrowser
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
+try:
+    from slack_sdk import WebClient
+    from slack_sdk.errors import SlackApiError
+except ImportError:
+    WebClient = None
+
+    class SlackApiError(Exception):
+        pass
+
 from config import GITHUB_CONFIG, SLACK_CONFIG, LOCAL_FILE_CONFIG
 
 
@@ -217,6 +224,13 @@ class SlackFileNotifier(BaseNotifier):
     def send(self, report_data):
         """Slack에 HTML 파일 직접 업로드"""
         try:
+            if WebClient is None:
+                return {
+                    "success": False,
+                    "message": "slack_sdk가 설치되지 않아 Slack 파일 업로드를 사용할 수 없습니다.",
+                    "url": ""
+                }
+
             print("[Slack] 파일 업로드 시작...")
             
             # 임시 파일 생성

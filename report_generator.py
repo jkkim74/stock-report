@@ -13,6 +13,7 @@ import sys
 import io
 import base64
 import os
+import re
 import traceback
 import numpy as np
 import pandas as pd
@@ -44,6 +45,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
+logging.raiseExceptions = False
 
 
 # Windows 콘솔 UTF-8 인코딩 설정
@@ -65,6 +67,8 @@ TZ = timezone("Asia/Seoul")
 # matplotlib 한글 폰트 설정
 matplotlib.rcParams["font.family"] = "Malgun Gothic"
 matplotlib.rcParams["axes.unicode_minus"] = False
+
+_PYKRX_INVESTOR_AVAILABLE = None
 
 
 class ReportData:
@@ -115,9 +119,151 @@ def fmt(v, nd=3):
 # ===== 프리미엄 주식 리포트 헬퍼 함수들 =====
 
 def get_trade_date():
-    """거래일 조회"""
-    d = stock.get_nearest_business_day_in_a_week()
-    return d if isinstance(d, str) else d.strftime("%Y%m%d")
+    """거래일 조회.
+
+    pykrx의 최근 영업일 API가 KRX 응답 형식 변화나 일시 차단으로 빈
+    DataFrame을 반환하는 경우가 있어, 삼성전자 일봉 조회로 기준일을
+    보정한다.
+    """
+    end = datetime.now(TZ).date()
+    start = end - timedelta(days=14)
+    try:
+        df = stock.get_market_ohlcv_by_date(
+            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), "005930"
+        )
+        if df is not None and not df.empty:
+            return pd.to_datetime(df.index[-1]).strftime("%Y%m%d")
+    except Exception as e:
+        print(f"[WARNING] 삼성전자 기준 거래일 보정 실패: {e}")
+
+    try:
+        d = stock.get_nearest_business_day_in_a_week()
+        if d:
+            return d if isinstance(d, str) else d.strftime("%Y%m%d")
+    except Exception as e:
+        print(f"[WARNING] pykrx 최근 거래일 조회 실패: {e}")
+
+    return end.strftime("%Y%m%d")
+
+
+def _naver_to_number(value):
+    """네이버 금융 표기 숫자를 float로 변환"""
+    if value is None:
+        return np.nan
+    s = str(value).strip().replace(",", "").replace("%", "")
+    if s in ("", "N/A", "nan"):
+        return np.nan
+    s = s.replace("상승", "").replace("하락", "").replace("보합", "")
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
+
+
+def _load_naver_market_rows(market, max_pages=40):
+    """pykrx 시장 전체 조회 실패 시 네이버 금융에서 기본 종목 목록을 로드"""
+    sosok = "0" if market == "KOSPI" else "1"
+    rows = []
+
+    for page in range(1, max_pages + 1):
+        url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
+        try:
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            r.raise_for_status()
+            r.encoding = "euc-kr"
+        except Exception as e:
+            print(f"[WARNING] Naver {market} page {page} 조회 실패: {e}")
+            break
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "lxml")
+        page_count = 0
+
+        for tr in soup.select("table.type_2 tr"):
+            link = tr.select_one("a.tltle")
+            cols = [td.get_text(strip=True) for td in tr.select("td")]
+            if not link or len(cols) < 10:
+                continue
+
+            m = re.search(r"code=(\d{6})", link.get("href", ""))
+            if not m:
+                continue
+
+            close = _naver_to_number(cols[2])
+            change = _naver_to_number(cols[4])
+            mcap = _naver_to_number(cols[6]) * 1e8
+            volume = _naver_to_number(cols[9])
+            value = close * volume if not np.isnan(close) and not np.isnan(volume) else np.nan
+
+            rows.append({
+                "시장": market,
+                "티커": m.group(1),
+                "종목명": link.get_text(strip=True),
+                "종가": close,
+                "등락률(%)": change,
+                "거래대금(억원)": value / 1e8 if not np.isnan(value) else np.nan,
+                "시가총액(억원)": mcap / 1e8 if not np.isnan(mcap) else np.nan,
+            })
+            page_count += 1
+
+        if page_count == 0:
+            break
+
+    return rows
+
+
+def _load_premium_base_rows(trade_date):
+    """프리미엄 리포트 1차 필터용 기본 종목 로드"""
+    base_rows = []
+
+    for market in ["KOSPI", "KOSDAQ"]:
+        market_rows = []
+        try:
+            ohlcv = stock.get_market_ohlcv_by_ticker(trade_date, market)
+            cap = stock.get_market_cap(trade_date, market)
+
+            if "시가총액" in ohlcv.columns:
+                ohlcv = ohlcv.drop(columns=["시가총액"])
+            df = ohlcv.join(cap[["시가총액"]], how="left")
+
+            if "등락률" not in df.columns:
+                raise RuntimeError("등락률 컬럼이 없습니다.")
+
+            for ticker in tqdm(df.index.tolist(), desc=f"{market} 기본 필터"):
+                row = df.loc[ticker]
+                market_rows.append({
+                    "시장": market,
+                    "티커": ticker,
+                    "종목명": stock.get_market_ticker_name(ticker),
+                    "종가": float(row["종가"]),
+                    "등락률(%)": float(row["등락률"]),
+                    "거래대금(억원)": float(row["거래대금"]) / 1e8,
+                    "시가총액(억원)": float(row["시가총액"]) / 1e8,
+                })
+        except Exception as e:
+            print(f"[WARNING] pykrx {market} 기본 목록 조회 실패, Naver fallback 사용: {e}")
+            market_rows = _load_naver_market_rows(market)
+
+        for row in market_rows:
+            close = safe_float(row["종가"])
+            value = safe_float(row["거래대금(억원)"]) * 1e8
+            mcap = safe_float(row["시가총액(억원)"]) * 1e8
+            change = safe_float(row["등락률(%)"])
+
+            if close <= 0 or mcap <= 0:
+                continue
+            if np.isnan(value) or np.isnan(change):
+                continue
+            if change < ANALYSIS_CONFIG["MIN_CHANGE"]:
+                continue
+            if value < ANALYSIS_CONFIG["MIN_VALUE"]:
+                continue
+            if mcap < ANALYSIS_CONFIG["MIN_MCAP"]:
+                continue
+
+            base_rows.append(row)
+
+    return base_rows
 
 def get_52w_stats(ticker, end_date):
     """52주 최고가/최저가 조회"""
@@ -154,6 +300,10 @@ def get_recent_ohlcv(ticker, end_date):
 
 def get_net_values(ticker, date):
     """외국인/기관 순매수 조회"""
+    global _PYKRX_INVESTOR_AVAILABLE
+    if _PYKRX_INVESTOR_AVAILABLE is False:
+        return 0, 0
+
     try:
         df = stock.get_market_trading_value_by_investor(date, date, ticker)
         if df is None or df.empty:
@@ -163,8 +313,12 @@ def get_net_values(ticker, date):
         col = df.columns[-1]
         net_f = int(df.loc[idx.str.contains("외국인"), col].sum())
         net_i = int(df.loc[idx.str.contains("기관"), col].sum())
+        _PYKRX_INVESTOR_AVAILABLE = True
         return net_f, net_i
-    except:
+    except Exception as e:
+        if _PYKRX_INVESTOR_AVAILABLE is None:
+            print(f"[WARNING] pykrx 투자자별 순매수 조회 실패, 이번 실행에서는 순매수 조건을 비활성화합니다: {e}")
+        _PYKRX_INVESTOR_AVAILABLE = False
         return 0, 0
 
 def classify_breakout_pattern(df_recent, is_52w_high):
@@ -1097,46 +1251,8 @@ def generate_premium_stock_report():
         trade_date = get_trade_date()
         print(f"[INFO] Premium 기준일: {trade_date}")
 
-        base_rows = []
-
         # 1. 기본 필터 (리포트 포함 종목)
-        for market in ["KOSPI", "KOSDAQ"]:
-            ohlcv = stock.get_market_ohlcv_by_ticker(trade_date, market)
-            cap = stock.get_market_cap(trade_date, market)
-
-            if "시가총액" in ohlcv.columns:
-                ohlcv = ohlcv.drop(columns=["시가총액"])
-            df = ohlcv.join(cap[["시가총액"]], how="left")
-
-            if "등락률" not in df.columns:
-                raise RuntimeError("등락률 컬럼이 없습니다. pykrx 버전을 확인하세요.")
-
-            for ticker in tqdm(df.index.tolist(), desc=f"{market} 기본 필터"):
-                row = df.loc[ticker]
-                close = float(row["종가"])
-                value = float(row["거래대금"])
-                mcap = float(row["시가총액"])
-                change = float(row["등락률"])
-
-                # 필터링 조건
-                if close <= 0 or mcap <= 0:
-                    continue
-                if change < ANALYSIS_CONFIG["MIN_CHANGE"]:
-                    continue
-                if value < ANALYSIS_CONFIG["MIN_VALUE"]:
-                    continue
-                if mcap < ANALYSIS_CONFIG["MIN_MCAP"]:
-                    continue
-
-                base_rows.append({
-                    "시장": market,
-                    "티커": ticker,
-                    "종목명": stock.get_market_ticker_name(ticker),
-                    "종가": close,
-                    "등락률(%)": change,
-                    "거래대금(억원)": value / 1e8,
-                    "시가총액(억원)": mcap / 1e8,
-                })
+        base_rows = _load_premium_base_rows(trade_date)
 
         if not base_rows:
             print("[INFO] 기본 조건을 만족하는 종목이 없습니다.")
