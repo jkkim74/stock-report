@@ -3,6 +3,28 @@
 설정 관리 모듈 - 모든 설정값을 중앙에서 관리
 """
 
+import os
+from pathlib import Path
+
+
+def load_local_env(path=".env"):
+    """Load local .env values without adding a runtime dependency."""
+    env_path = Path(__file__).resolve().parent / path
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
+load_local_env()
+
 # ===== 분석 기준 설정 =====
 ANALYSIS_CONFIG = {
     "MIN_CHANGE": 5.0,                   # 등락률 ≥ 5%

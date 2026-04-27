@@ -69,6 +69,8 @@ matplotlib.rcParams["font.family"] = "Malgun Gothic"
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 _PYKRX_INVESTOR_AVAILABLE = None
+_KRX_SESSION = None
+_KRX_AUTH_NOTICE_SHOWN = False
 
 
 class ReportData:
@@ -160,6 +162,139 @@ def _naver_to_number(value):
         return np.nan
 
 
+def _build_krx_session():
+    """KRX JSON API 호출용 세션 생성.
+
+    최신 pykrx는 KRX_ID/KRX_PW 환경변수가 있으면 로그인 세션을 사용한다.
+    프로젝트 내부 호출도 같은 환경변수를 지원하되, 값이 없으면 익명 세션으로
+    시도하고 실패 시 상위 fallback으로 넘긴다.
+    """
+    global _KRX_AUTH_NOTICE_SHOWN
+
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Origin": "https://data.krx.co.kr",
+        "Referer": "https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201020101",
+        "X-Requested-With": "XMLHttpRequest",
+    })
+
+    try:
+        s.get(
+            "https://data.krx.co.kr/contents/MDC/COMS/client/MDCCOMS001.cmd",
+            timeout=15,
+        )
+        s.get(
+            "https://data.krx.co.kr/contents/MDC/COMS/client/view/login.jsp?site=mdc",
+            timeout=15,
+        )
+    except Exception:
+        pass
+
+    login_id = os.getenv("KRX_ID")
+    login_pw = os.getenv("KRX_PW")
+    if not (login_id and login_pw):
+        if not _KRX_AUTH_NOTICE_SHOWN:
+            print("[INFO] KRX_ID/KRX_PW 환경변수가 없어 KRX 익명 세션으로 시도합니다.")
+            _KRX_AUTH_NOTICE_SHOWN = True
+        return s
+
+    payload = {
+        "mbrNm": "",
+        "telNo": "",
+        "di": "",
+        "certType": "",
+        "mbrId": login_id,
+        "pw": login_pw,
+    }
+    login_url = "https://data.krx.co.kr/contents/MDC/COMS/client/MDCCOMS001D1.cmd"
+
+    try:
+        r = s.post(login_url, data=payload, timeout=15)
+        data = r.json()
+        if data.get("_error_code") == "CD011":
+            payload["skipDup"] = "Y"
+            data = s.post(login_url, data=payload, timeout=15).json()
+
+        if data.get("_error_code") == "CD001":
+            print("[INFO] KRX 로그인 세션 생성 완료")
+        else:
+            print(f"[WARNING] KRX 로그인 실패: {data.get('_error_code')} {data.get('_error_message', '')}")
+    except Exception as e:
+        print(f"[WARNING] KRX 로그인 세션 생성 실패: {e}")
+
+    return s
+
+
+def _krx_json_request(payload, retry=True):
+    """KRX JSON API 호출. LOGOUT/비JSON 응답은 명시적으로 실패 처리."""
+    global _KRX_SESSION
+
+    if _KRX_SESSION is None:
+        _KRX_SESSION = _build_krx_session()
+
+    url = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+    try:
+        r = _KRX_SESSION.post(url, data=payload, timeout=25)
+        text = (r.text or "").strip()
+
+        if text == "LOGOUT":
+            if retry and os.getenv("KRX_ID") and os.getenv("KRX_PW"):
+                _KRX_SESSION = _build_krx_session()
+                return _krx_json_request(payload, retry=False)
+            raise RuntimeError("KRX API returned LOGOUT")
+
+        r.raise_for_status()
+        return r.json()
+    except ValueError as e:
+        raise RuntimeError(f"KRX API returned non-JSON response: {e}") from e
+
+
+def _load_krx_market_rows_direct(trade_date, market):
+    """pykrx 실패 시 KRX JSON API를 직접 호출해 전종목 기본 데이터를 로드."""
+    mkt_id = {"KOSPI": "STK", "KOSDAQ": "KSQ"}[market]
+    payload = {
+        "bld": "dbms/MDC/STAT/standard/MDCSTAT01501",
+        "mktId": mkt_id,
+        "trdDd": trade_date,
+        "share": "1",
+        "money": "1",
+        "csvxls_isNo": "false",
+    }
+
+    data = _krx_json_request(payload)
+    rows = data.get("OutBlock_1") or data.get("output") or []
+    out = []
+
+    for item in rows:
+        ticker = str(item.get("ISU_SRT_CD", "")).strip()
+        name = str(item.get("ISU_ABBRV", "")).strip()
+        close = _naver_to_number(item.get("TDD_CLSPRC"))
+        change = _naver_to_number(item.get("FLUC_RT"))
+        value = _naver_to_number(item.get("ACC_TRDVAL"))
+        mcap = _naver_to_number(item.get("MKTCAP"))
+
+        if not ticker or not name:
+            continue
+
+        out.append({
+            "시장": market,
+            "티커": ticker,
+            "종목명": name,
+            "종가": close,
+            "등락률(%)": change,
+            "거래대금(억원)": value / 1e8 if not np.isnan(value) else np.nan,
+            "시가총액(억원)": mcap / 1e8 if not np.isnan(mcap) else np.nan,
+        })
+
+    return out
+
+
 def _load_naver_market_rows(market, max_pages=40):
     """pykrx 시장 전체 조회 실패 시 네이버 금융에서 기본 종목 목록을 로드"""
     sosok = "0" if market == "KOSPI" else "1"
@@ -241,8 +376,16 @@ def _load_premium_base_rows(trade_date):
                     "시가총액(억원)": float(row["시가총액"]) / 1e8,
                 })
         except Exception as e:
-            print(f"[WARNING] pykrx {market} 기본 목록 조회 실패, Naver fallback 사용: {e}")
-            market_rows = _load_naver_market_rows(market)
+            print(f"[WARNING] pykrx {market} 기본 목록 조회 실패: {e}")
+            try:
+                market_rows = _load_krx_market_rows_direct(trade_date, market)
+                if market_rows:
+                    print(f"[INFO] KRX direct {market} 기본 목록 조회 성공: {len(market_rows)}종목")
+                else:
+                    raise RuntimeError("KRX direct returned empty rows")
+            except Exception as direct_e:
+                print(f"[WARNING] KRX direct {market} 기본 목록 조회 실패, Naver fallback 사용: {direct_e}")
+                market_rows = _load_naver_market_rows(market)
 
         for row in market_rows:
             close = safe_float(row["종가"])
@@ -2163,15 +2306,9 @@ def _supply_safe_return(closes, days):
 
 class _SupplyKrxJson:
     """KRX JSON API 래퍼 (Market Supply 전용)"""
-    
-    URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
 
     def __init__(self):
-        self.s = requests.Session()
-        self.s.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://data.krx.co.kr"
-        })
+        pass
 
     def get_all(self, date):
         """전체 종목 데이터 조회"""
@@ -2184,9 +2321,7 @@ class _SupplyKrxJson:
         }
         
         try:
-            r = self.s.post(self.URL, data=payload, timeout=25)
-            r.raise_for_status()
-            j = r.json()
+            j = _krx_json_request(payload)
             rows = j.get("OutBlock_1", j.get("output", []))
             df = pd.DataFrame(rows)
             
