@@ -1,0 +1,7 @@
+* text=auto
+
+# systemd 유닛에 CRLF가 섞이면 값 끝에 \r이 붙어 ExecStart 등이 깨진다.
+# 워크플로 셸 스크립트도 LF로 고정한다.
+deploy/* text eol=lf
+.github/workflows/*.yml text eol=lf
+*.sh text eol=lf

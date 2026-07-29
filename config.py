@@ -44,25 +44,27 @@ GITHUB_CONFIG = {
 }
 
 # ===== Slack 설정 =====
+# 모든 자격증명은 .env에서 읽는다 (.env는 gitignore 대상).
+# 소스에 하드코딩하지 말 것 - 과거 커밋된 토큰은 전량 폐기되었다.
 SLACK_CONFIG = {
     # Webhook URL (GitHub Pages 알림용)
-    "webhook_url": "https://hooks.slack.com/services/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",
-    
+    "webhook_url": os.getenv("SLACK_WEBHOOK_URL", ""),
+
     # Bot Token (파일 업로드용)
-    "bot_token": "xoxb-9745985197379-10123228976753-ahTerLqgVeOoiQCL8gdmsJOL",
-    
+    "bot_token": os.getenv("SLACK_BOT_TOKEN", ""),
+
     # 채널 ID
-    "channel_id": "C09MNTRR739"
+    "channel_id": os.getenv("SLACK_CHANNEL_ID", "")
 }
 
-# ===== Telegram 설정 (신규 추가) =====
+# ===== Telegram 설정 =====
 TELEGRAM_CONFIG = {
     # BotFather에서 받은 Bot Token
-    "bot_token": "8501237845:AAHAKqCqTPODqpS1NSMcIaUD_Mg3CuAUK9c",  # ← 본인 토큰으로 변경!
-    
+    "bot_token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
+
     # Chat ID (개인: 숫자, 채널: @channel_name 또는 -100xxx)
-    "chat_id": "-5059622484",#"8149176134",#"@premium_stock_report_bot",#"8149176134",  # ← 본인 Chat ID로 변경!
-    
+    "chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
+
     # 발송 옵션
     "send_preview": True,       # 미리보기 메시지 포함 여부
     "send_as_file": True,       # HTML 파일 첨부 여부

@@ -1,4 +1,8 @@
 .env
 __pycache__/
 *.py[cod]
+
+# 생성 산출물 (out/은 report_generator.py 직접 실행 시의 테스트 출력 경로)
 out/
+logs/
+/*.html

@@ -426,10 +426,14 @@ class TelegramNotifier(BaseNotifier):
             bot_token = TELEGRAM_CONFIG["bot_token"]
             chat_id = TELEGRAM_CONFIG["chat_id"]
             
-            if not bot_token or bot_token.startswith("1234567890"):
+            if not bot_token or not chat_id:
+                missing = " / ".join(
+                    name for name, value in (("TELEGRAM_BOT_TOKEN", bot_token), ("TELEGRAM_CHAT_ID", chat_id))
+                    if not value
+                )
                 return {
                     "success": False,
-                    "message": "Telegram Bot Token이 설정되지 않았습니다. config.py를 확인하세요.",
+                    "message": f"Telegram 설정 누락: {missing} - .env를 확인하세요.",
                     "url": ""
                 }
             

@@ -64,13 +64,46 @@ if sys.platform == 'win32':
 
 TZ = timezone("Asia/Seoul")
 
-# matplotlib 한글 폰트 설정
-matplotlib.rcParams["font.family"] = "Malgun Gothic"
+# matplotlib 한글 폰트 설정.
+# Malgun Gothic을 무조건 지정하면 Linux(배포 대상 VM)에는 그 폰트가 없어
+# DejaVu Sans로 폴백되고, DejaVu에는 한글 글리프가 없어 차트가 전부 두부(□)로 렌더링된다.
+# 크래시가 아니라 조용히 깨지므로 설치된 폰트 중에서 골라 쓴다.
+def _setup_korean_font():
+    """사용 가능한 한글 폰트를 찾아 설정하고 이름을 반환한다."""
+    from matplotlib import font_manager
+
+    candidates = [
+        "Malgun Gothic",      # Windows
+        "NanumGothic",        # Linux (fonts-nanum)
+        "NanumBarunGothic",
+        "Noto Sans CJK KR",
+        "AppleGothic",        # macOS
+    ]
+    installed = {f.name for f in font_manager.fontManager.ttflist}
+
+    for name in candidates:
+        if name in installed:
+            matplotlib.rcParams["font.family"] = name
+            return name
+
+    print(
+        "[WARNING] 한글 폰트를 찾지 못했습니다. 차트의 한글이 깨집니다. "
+        f"(후보: {', '.join(candidates)}) "
+        "Linux는 'sudo apt-get install fonts-nanum' 후 ~/.cache/matplotlib 삭제."
+    )
+    return None
+
+
+KOREAN_FONT = _setup_korean_font()
 matplotlib.rcParams["axes.unicode_minus"] = False
 
-_PYKRX_INVESTOR_AVAILABLE = None
 _KRX_SESSION = None
 _KRX_AUTH_NOTICE_SHOWN = False
+
+# 투자자별 순매수 조회 연속 실패 카운터.
+# 일시적 실패 1회로 실행 전체를 무력화하지 않기 위해 "연속" 실패만 센다.
+_KRX_INVESTOR_FAIL_STREAK = 0
+_KRX_INVESTOR_FAIL_LIMIT = 5
 
 
 class ReportData:
@@ -442,27 +475,36 @@ def get_recent_ohlcv(ticker, end_date):
     return df if not df.empty else None
 
 def get_net_values(ticker, date):
-    """외국인/기관 순매수 조회"""
-    global _PYKRX_INVESTOR_AVAILABLE
-    if _PYKRX_INVESTOR_AVAILABLE is False:
-        return 0, 0
+    """외국인/기관 순매수 조회.
+
+    실패 시 (None, None)을 반환한다. 0원은 '순매수 없음'이라는 정상값이므로
+    실패를 0으로 표현하면 호출부에서 둘을 구분할 수 없다.
+
+    연속 실패가 임계치에 도달하면 남은 종목은 조회를 건너뛴다. 단, 성공 시
+    카운터가 초기화되므로 일시적 실패 1회가 실행 전체를 무력화하지 않는다.
+    """
+    global _KRX_INVESTOR_FAIL_STREAK
+
+    if _KRX_INVESTOR_FAIL_STREAK >= _KRX_INVESTOR_FAIL_LIMIT:
+        return None, None
 
     try:
         df = stock.get_market_trading_value_by_investor(date, date, ticker)
         if df is None or df.empty:
-            return 0, 0
-        
+            return None, None
+
         idx = df.index.astype(str)
         col = df.columns[-1]
         net_f = int(df.loc[idx.str.contains("외국인"), col].sum())
         net_i = int(df.loc[idx.str.contains("기관"), col].sum())
-        _PYKRX_INVESTOR_AVAILABLE = True
+        _KRX_INVESTOR_FAIL_STREAK = 0
         return net_f, net_i
     except Exception as e:
-        if _PYKRX_INVESTOR_AVAILABLE is None:
-            print(f"[WARNING] pykrx 투자자별 순매수 조회 실패, 이번 실행에서는 순매수 조건을 비활성화합니다: {e}")
-        _PYKRX_INVESTOR_AVAILABLE = False
-        return 0, 0
+        _KRX_INVESTOR_FAIL_STREAK += 1
+        print(f"[WARNING] {ticker} 투자자별 순매수 조회 실패 (연속 {_KRX_INVESTOR_FAIL_STREAK}회): {e}")
+        if _KRX_INVESTOR_FAIL_STREAK >= _KRX_INVESTOR_FAIL_LIMIT:
+            print(f"[ERROR] 연속 {_KRX_INVESTOR_FAIL_LIMIT}회 실패 - 이후 종목의 수급 조회를 건너뜁니다.")
+        return None, None
 
 def classify_breakout_pattern(df_recent, is_52w_high):
     """신고가 패턴 분류"""
@@ -522,7 +564,7 @@ def calc_ai_prob(pattern, is_premium, change_pct, from_low, net_f, net_i):
     # 조건별 보정
     if is_premium:
         base += 5
-    if net_f > 0 and net_i > 0:
+    if net_f is not None and net_i is not None and net_f > 0 and net_i > 0:
         base += 3
     if from_low < 150:
         base += 2
@@ -539,8 +581,9 @@ def style_row(row):
     r["등락률(%)"] = f"{row['등락률(%)']:,.1f}"
     r["거래대금(억원)"] = f"{row['거래대금(억원)']:,.1f}"
     r["시가총액(억원)"] = f"{row['시가총액(억원)']:,.1f}"
-    r["외국인순매수(억)"] = f"{row['외국인순매수(억)']:,.1f}"
-    r["기관순매수(억)"] = f"{row['기관순매수(억)']:,.1f}"
+    # 수급은 조회 실패 시 NaN이 들어온다. 0.0으로 보이면 '순매수 없음'과 혼동되므로 명시한다.
+    r["외국인순매수(억)"] = "조회불가" if pd.isna(row["외국인순매수(억)"]) else f"{row['외국인순매수(억)']:,.1f}"
+    r["기관순매수(억)"] = "조회불가" if pd.isna(row["기관순매수(억)"]) else f"{row['기관순매수(억)']:,.1f}"
     r["52주최저대비(%)"] = f"{row['52주최저대비(%)']:,.1f}"
     r["AI예상상승확률(%)"] = f"{row['AI예상상승확률(%)']:,.0f}"
 
@@ -701,8 +744,11 @@ tbody tr:hover {{ background: #eef2ff; }}
 # ===== Gap Up & Down Risk Report 전용 함수들 =====
 
 # 상수 정의
-KOSPI200_TICKER = "KOSPI200.KS"
-KOSDAQ150_TICKER = "KQ150.KS"
+# Yahoo Finance 심볼. 과거에 쓰던 "KOSPI200.KS"/"KQ150.KS"는 존재하지 않는 심볼이라
+# safe_fetch가 항상 None을 반환했고, 코스닥 전용 점수가 산정에서 통째로 빠져 있었다.
+# ^KQ11은 KOSDAQ150이 아니라 코스닥 '종합'지수다(Yahoo에 신뢰할 만한 KOSDAQ150 심볼이 없음).
+KOSPI200_TICKER = "^KS200"
+KOSDAQ_TICKER = "^KQ11"
 FUTURES = {
     "ES": {"main": "ES=F", "alt": "MES=F"},
     "NQ": {"main": "NQ=F", "alt": "MNQ=F"},
@@ -828,12 +874,13 @@ def compute_global_signals():
 def compute_kosdaq_signals():
     """코스닥 전용 신호 계산"""
     s = {}
-    df = safe_fetch(KOSDAQ150_TICKER, period="30d", interval="1d")
+    df = safe_fetch(KOSDAQ_TICKER, period="30d", interval="1d")
 
     if df is None or len(df) < 6:
-        s["KOSDAQ150_ret_d"] = {"value": np.nan, "unit": "%", "desc": "KOSDAQ150 일간 수익률"}
-        s["KOSDAQ150_ATR5_pct"] = {"value": np.nan, "unit": "%", "desc": "KOSDAQ150 5일 ATR% (변동성)"}
-        s["KOSDAQ150_long_red"] = {"value": 0.0, "unit": "bool", "desc": "KOSDAQ150 장대 음봉(1=예,0=아니오)"}
+        print(f"[WARNING] 코스닥 지수({KOSDAQ_TICKER}) 조회 실패 - 코스닥 전용 신호가 빠집니다.")
+        s["KOSDAQ_ret_d"] = {"value": np.nan, "unit": "%", "desc": "코스닥 지수 일간 수익률"}
+        s["KOSDAQ_ATR5_pct"] = {"value": np.nan, "unit": "%", "desc": "코스닥 지수 5일 ATR% (변동성)"}
+        s["KOSDAQ_long_red"] = {"value": 0.0, "unit": "bool", "desc": "코스닥 지수 장대 음봉(1=예,0=아니오)"}
         return s
 
     ret_d = pct(df["Close"].iloc[-1], df["Close"].iloc[-2])
@@ -853,9 +900,9 @@ def compute_kosdaq_signals():
     today_range = safe_float(h) - safe_float(l)
     long_red = int((c < o) and (atr5 > 0) and (today_range >= 1.5 * atr5))
 
-    s["KOSDAQ150_ret_d"] = {"value": ret_d, "unit": "%", "desc": "KOSDAQ150 일간 수익률"}
-    s["KOSDAQ150_ATR5_pct"] = {"value": atr5_pct, "unit": "%", "desc": "KOSDAQ150 5일 ATR% (변동성)"}
-    s["KOSDAQ150_long_red"] = {"value": float(long_red), "unit": "bool", "desc": "KOSDAQ150 장대 음봉(1=예,0=아니오)"}
+    s["KOSDAQ_ret_d"] = {"value": ret_d, "unit": "%", "desc": "코스닥 지수 일간 수익률"}
+    s["KOSDAQ_ATR5_pct"] = {"value": atr5_pct, "unit": "%", "desc": "코스닥 지수 5일 ATR% (변동성)"}
+    s["KOSDAQ_long_red"] = {"value": float(long_red), "unit": "bool", "desc": "코스닥 지수 장대 음봉(1=예,0=아니오)"}
     return s
 
 def clamp_score(x):
@@ -1021,15 +1068,15 @@ def score_kosdaq(global_s, kosdaq_s):
         down += 6; dd.append(f"원화 급약세 → 코스닥 회피 가능성 (Δ {fmt(USDKRW,2)}원)")
 
     # 코스닥 전용(핵심)
-    KQ_ret = safe_float(kosdaq_s["KOSDAQ150_ret_d"]["value"])
-    ATR = safe_float(kosdaq_s["KOSDAQ150_ATR5_pct"]["value"])
-    long_red = (safe_float(kosdaq_s["KOSDAQ150_long_red"]["value"]) == 1.0)
+    KQ_ret = safe_float(kosdaq_s["KOSDAQ_ret_d"]["value"])
+    ATR = safe_float(kosdaq_s["KOSDAQ_ATR5_pct"]["value"])
+    long_red = (safe_float(kosdaq_s["KOSDAQ_long_red"]["value"]) == 1.0)
 
     if not np.isnan(KQ_ret):
         if KQ_ret >= 2.0:
-            up += 14; du.append(f"KOSDAQ150 강세 → 코스닥 모멘텀 (+{fmt(KQ_ret)}%)")
+            up += 14; du.append(f"코스닥 지수 강세 → 코스닥 모멘텀 (+{fmt(KQ_ret)}%)")
         elif KQ_ret <= -2.0:
-            down += 14; dd.append(f"KOSDAQ150 급락 → 코스닥 모멘텀 약화 ({fmt(KQ_ret)}%)")
+            down += 14; dd.append(f"코스닥 지수 급락 → 코스닥 모멘텀 약화 ({fmt(KQ_ret)}%)")
     if not np.isnan(ATR):
         if ATR >= 3.5 and (not np.isnan(KQ_ret)) and KQ_ret <= -1.0:
             down += 12; dd.append(f"변동성(ATR%) 높고 하락 동반 → 급락 확대 위험 (ATR={fmt(ATR,2)}%)")
@@ -1131,7 +1178,7 @@ def glossary_blocks():
         ("BTC",
          "위험자산 선호/회피 심리의 '온도계'처럼 움직일 때가 있습니다. 단, 단독 신호는 과신 금지(보조 지표).",
          "0~2일"),
-        ("KOSDAQ150 ATR%",
+        ("코스닥 지수 ATR%",
          "코스닥 변동성(진폭)을 나타내는 지표입니다. 변동성이 높은 상태에서 하락까지 겹치면 급락으로 번질 확률이 올라갑니다.",
          "1~3일"),
         ("장대 음봉(코스닥)",
@@ -1421,11 +1468,15 @@ def generate_premium_stock_report():
             gap = 0.0 if is_52w_high else (high52 - close) / high52 * 100.0
             from_low = (close / low52 - 1.0) * 100.0
 
-            # 수급 정보 조회
+            # 수급 정보 조회 (조회 실패 시 None - 순매수 0원과 구분된다)
             net_f, net_i = get_net_values(ticker, trade_date)
+            flow_known = net_f is not None and net_i is not None
 
-            # 프리미엄 조건 판단
-            is_premium = (from_low < ANALYSIS_CONFIG["MAX_FROM_LOW"] and net_f > 0 and net_i > 0)
+            # 프리미엄 조건 판단 (수급을 확인하지 못했으면 프리미엄으로 승격하지 않는다)
+            is_premium = (
+                from_low < ANALYSIS_CONFIG["MAX_FROM_LOW"]
+                and flow_known and net_f > 0 and net_i > 0
+            )
 
             # 패턴 분석
             df_recent = get_recent_ohlcv(ticker, trade_date)
@@ -1444,8 +1495,8 @@ def generate_premium_stock_report():
                 "52주신고가": "Yes" if is_52w_high else "",
                 "52주괴리(%)": gap,
                 "52주최저대비(%)": from_low,
-                "외국인순매수(억)": net_f / 1e8,
-                "기관순매수(억)": net_i / 1e8,
+                "외국인순매수(억)": net_f / 1e8 if flow_known else np.nan,
+                "기관순매수(억)": net_i / 1e8 if flow_known else np.nan,
                 "신고가패턴": pattern,
                 "AI전략": ai_strategy,
                 "AI예상상승확률(%)": ai_prob,
@@ -2275,21 +2326,26 @@ def _supply_pick_col(df, names):
     raise KeyError(f"필요 컬럼을 찾지 못했습니다: {names}")
 
 def _supply_get_recent_trading_dates(last_date_str, n_days):
-    """최근 N개 거래일 목록 조회"""
+    """최근 N개 거래일 목록 조회.
+
+    삼성전자 일봉의 인덱스를 한 번 조회해 거래일 달력을 만든다.
+    과거에는 하루씩 거슬러 올라가며 날짜별로 조회했는데, 반복 상한과 실패
+    카운터가 없어 KRX가 차단되면 무한히 요청을 보냈다. 또한 평일 여부만
+    확인해 공휴일 처리도 이 방식이 더 정확하다.
+    """
     last_dt = datetime.strptime(last_date_str, "%Y%m%d")
-    days = []
-    d = last_dt
-    while len(days) < n_days:
-        if d.weekday() < 5:  # 평일만
-            ds = d.strftime("%Y%m%d")
-            try:
-                # 실제 거래일인지 확인 (삼성전자로 테스트)
-                if not stock.get_market_ohlcv_by_date(ds, ds, "005930").empty:
-                    days.append(ds)
-            except Exception:
-                pass
-        d -= timedelta(days=1)
-    return sorted(days)
+    # 연휴를 감안해 넉넉히 조회한 뒤 뒤에서 n_days개만 취한다
+    start = (last_dt - timedelta(days=n_days * 3 + 15)).strftime("%Y%m%d")
+
+    df = stock.get_market_ohlcv_by_date(start, last_date_str, "005930")
+    if df is None or df.empty:
+        raise RuntimeError(f"거래일 조회 실패: {start}~{last_date_str} 구간에 데이터가 없습니다.")
+
+    days = [d.strftime("%Y%m%d") for d in pd.to_datetime(df.index)][-n_days:]
+    if len(days) < n_days:
+        raise RuntimeError(f"거래일 {n_days}개 확보 실패 (조회된 거래일 {len(days)}개)")
+
+    return days
 
 def _supply_safe_return(closes, days):
     """안전한 수익률 계산"""

@@ -1,0 +1,35 @@
+[Unit]
+Description=KOSPI/KOSDAQ AI 리포트 생성 및 발송 (1회 실행)
+Documentation=https://github.com/jkkim74/stock-report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__VM_USER__
+WorkingDirectory=/home/__VM_USER__/stock_report
+
+# report_generator.py의 UTF-8 재설정 블록은 sys.platform == 'win32'에서만 동작한다.
+# systemd 아래에서는 로케일이 C/POSIX로 잡혀 stdout이 ASCII가 될 수 있고, 그러면
+# 이모지·한글이 들어간 print() 약 124곳이 UnicodeEncodeError로 실행을 죽인다.
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONUTF8=1
+# oneshot 로그가 버퍼에 갇히지 않고 journald로 바로 흐르게 한다
+Environment=PYTHONUNBUFFERED=1
+
+# 자격증명은 config.py의 load_local_env()가 같은 디렉터리의 .env에서 읽는다.
+# (systemd EnvironmentFile을 쓰지 않는 이유: .env 파싱 규칙을 한 곳으로 유지하기 위함)
+ExecStart=/home/__VM_USER__/stock_report/venv/bin/python main.py
+
+# 리포트 한 회차는 수백 건의 순차 HTTP 요청을 낸다. 넉넉히 잡되 무한 대기는 막는다.
+TimeoutStartSec=3600
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stock-report
+
+# main.py 종료코드: 0=정상, 1=발송 실패, 2=degraded(데이터 소스 일부 장애)
+# 2를 실패로 볼지는 5단계(실패 전파 계약)에서 결정한다. 지금은 0만 성공.
+
+[Install]
+WantedBy=multi-user.target

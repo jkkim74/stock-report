@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - main
+  # 코드 변경 없이 배포만 다시 돌리고 싶을 때
+  workflow_dispatch:
+
+env:
+  REMOTE_DIR: /home/${{ secrets.VM_USER }}/stock_report
 
 jobs:
   deploy:
@@ -13,26 +18,148 @@ jobs:
     - name: Checkout source
       uses: actions/checkout@v4
 
+    # 시크릿이 비면 .env가 빈 값으로 써져 발송이 조용히 끊긴다. 먼저 막는다.
+    - name: Verify required secrets
+      env:
+        VM_HOST: ${{ secrets.VM_HOST }}
+        VM_USER: ${{ secrets.VM_USER }}
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        set -euo pipefail
+        missing=""
+        for name in VM_HOST VM_USER SSH_PRIVATE_KEY TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
+          eval "value=\${$name}"
+          [ -n "$value" ] || missing="$missing $name"
+        done
+        if [ -n "$missing" ]; then
+          echo "::error::필수 GitHub Secret 누락:$missing"
+          echo "Settings > Secrets and variables > Actions 에서 등록 후 다시 실행하세요."
+          exit 1
+        fi
+        echo "필수 시크릿 확인 완료"
+
     - name: Setup SSH
       run: |
+        set -euo pipefail
         mkdir -p ~/.ssh
         echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
+        ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
 
+    # --delete가 VM의 상태(.env / 로그 / 생성된 리포트)를 지우지 않도록 제외한다.
     - name: Deploy to VM
       run: |
+        set -euo pipefail
         rsync -avz --delete \
           --exclude 'venv' \
           --exclude '.git' \
+          --exclude '.env' \
+          --exclude 'logs' \
+          --exclude 'reports' \
+          --exclude '__pycache__' \
+          --exclude '*.html' \
           ./ \
-          ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:/home/${{ secrets.VM_USER }}/stock_report
+          "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:${{ env.REMOTE_DIR }}"
 
-    - name: Restart App
+    # .env는 gitignore 대상이라 rsync로 가지 않는다. 시크릿에서 매 배포마다 생성한다.
+    # 값에 따옴표/공백이 있어도 깨지지 않도록 원격 명령줄에 넣지 않고 stdin으로 넘긴다.
+    - name: Write .env on VM
+      env:
+        KRX_ID: ${{ secrets.KRX_ID }}
+        KRX_PW: ${{ secrets.KRX_PW }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
       run: |
-        ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
-          cd ~/stock_report
-          source venv/bin/activate || python3 -m venv venv
-          pkill -f main.py || true
-          nohup python main.py > logs/app.log 2>&1 &
+        set -euo pipefail
+        {
+          echo "# GitHub Actions가 배포 시 생성한 파일. 직접 수정하지 말 것."
+          printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN"
+          printf 'TELEGRAM_CHAT_ID=%s\n'   "$TELEGRAM_CHAT_ID"
+          # KRX 계정이 없으면 아예 내보내지 않는다. 빈 값을 쓰면 코드가 그 값으로
+          # 로그인을 시도하다 실패하므로, 미설정 상태(익명 세션)가 더 낫다.
+          [ -n "${KRX_ID:-}" ] && printf 'KRX_ID=%s\n' "$KRX_ID" || true
+          [ -n "${KRX_PW:-}" ] && printf 'KRX_PW=%s\n' "$KRX_PW" || true
+          [ -n "${SLACK_WEBHOOK_URL:-}" ] && printf 'SLACK_WEBHOOK_URL=%s\n' "$SLACK_WEBHOOK_URL" || true
+          [ -n "${SLACK_BOT_TOKEN:-}" ]   && printf 'SLACK_BOT_TOKEN=%s\n'   "$SLACK_BOT_TOKEN" || true
+          [ -n "${SLACK_CHANNEL_ID:-}" ]  && printf 'SLACK_CHANNEL_ID=%s\n'  "$SLACK_CHANNEL_ID" || true
+        } | ssh "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+              "umask 077 && mkdir -p '${{ env.REMOTE_DIR }}' && cat > '${{ env.REMOTE_DIR }}/.env'"
+        echo ".env 생성 완료 (권한 600)"
+
+    # 기존 워크플로는 venv를 만들기만 하고 활성화하지 않았고 pip install이 아예 없었다.
+    # 그래서 2회차 배포부터는 빈 venv로 실행되어 ModuleNotFoundError로 죽었다.
+    - name: Install dependencies on VM
+      run: |
+        set -euo pipefail
+        ssh "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" bash -euo pipefail << 'EOF'
+          cd "$HOME/stock_report"
+          mkdir -p logs
+
+          # 차트의 한글이 두부(□)로 깨지지 않게 나눔폰트를 설치한다.
+          if ! fc-list 2>/dev/null | grep -qi nanum; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fonts-nanum
+            # matplotlib 폰트 캐시를 비워야 새로 설치한 폰트를 인식한다
+            rm -rf "$HOME/.cache/matplotlib"
+          fi
+
+          [ -d venv ] || python3 -m venv venv
+          . venv/bin/activate
+          python -m pip install --upgrade pip --quiet
+          python -m pip install -r requirements.txt --quiet
+
+          # 지연 임포트라 실행 중반에야 터지는 의존성(bs4/lxml)까지 여기서 미리 확인한다
+          python -c "import bs4, lxml, numpy, pandas, pykrx, yfinance, FinanceDataReader, matplotlib; print('의존성 확인 완료')"
         EOF
+
+    # main.py는 1회성 배치다. nohup 데몬으로 띄우던 기존 방식은 스케줄 실행이
+    # 아예 없었고(= git push 할 때만 리포트 생성), pkill -f 는 다른 프로세스까지
+    # 잡을 수 있었다. systemd timer가 실행 주기를 소유한다.
+    - name: Install systemd timer on VM
+      run: |
+        set -euo pipefail
+        ssh "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" bash -euo pipefail << 'EOF'
+          cd "$HOME/stock_report"
+
+          # sudo가 비밀번호를 물으면 비대화형 세션에서는 그대로 멈춘다. 먼저 확인한다.
+          if ! sudo -n true 2>/dev/null; then
+            echo "이 계정은 비밀번호 없는 sudo가 불가능합니다. systemd 유닛을 설치할 수 없습니다." >&2
+            echo "VM에서 'sudo visudo'로 NOPASSWD를 설정하거나 유닛을 수동 설치하세요." >&2
+            exit 1
+          fi
+
+          # OnCalendar 타임존 접미사는 systemd 247+ 에서만 동작한다. 조용히 잘못된
+          # 시각에 도는 것을 막기 위해 먼저 검증한다.
+          if ! systemd-analyze calendar 'Mon-Fri 15:40 Asia/Seoul' > /dev/null 2>&1; then
+            echo "systemd가 타임존 지정 OnCalendar를 지원하지 않습니다 ($(systemctl --version | head -1))." >&2
+            echo "VM 타임존을 KST로 바꾸고 타이머의 ' Asia/Seoul' 접미사를 제거하세요:" >&2
+            echo "  sudo timedatectl set-timezone Asia/Seoul" >&2
+            exit 1
+          fi
+
+          # $USER는 비대화형 ssh 세션에서 설정되지 않을 수 있어 id -un을 쓴다
+          VM_USER="$(id -un)"
+          sed "s|__VM_USER__|${VM_USER}|g" deploy/stock-report.service | sudo tee /etc/systemd/system/stock-report.service > /dev/null
+          sudo cp deploy/stock-report.timer /etc/systemd/system/stock-report.timer
+
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now stock-report.timer
+
+          # 예전 방식으로 떠 있던 프로세스가 남아 있으면 정리한다
+          pkill -f 'python main.py' 2>/dev/null || true
+
+          echo "--- 다음 실행 예정 ---"
+          systemctl list-timers stock-report.timer --no-pager
+        EOF
+
+    - name: Summary
+      run: |
+        echo "배포 완료. 리포트는 평일 15:40 KST에 자동 실행됩니다."
+        echo "수동 실행 : sudo systemctl start stock-report.service"
+        echo "로그 확인 : journalctl -u stock-report -n 200 --no-pager"
+        echo "타이머 확인: systemctl list-timers stock-report.timer"
